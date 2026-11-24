@@ -159,19 +159,21 @@ public final class HyperOsCardFactory {
             Template nextTemplate = registered(next.key);
             long nextFingerprint = fingerprint(next);
             boolean rebuild = item == null || !item.key.equals(next.key) || family(item) != family(next)
+                    || (family(next) == 1 && incoming != HyperOsIncomingCalls.isIncoming(next))
                     || (nextTemplate == null ? template != null && template.registered : template != nextTemplate)
                     || (family(next) == 0 && nextTemplate == null && nextFingerprint != contentFingerprint);
             item = next;
             contentFingerprint = nextFingerprint;
             if (family(next) == 2) ticking = next.playing;
             else if (family(next) == 1) ticking = next.hasChronometer() && next.pausedMs < 0;
+            else if (next.kind == IslandItem.Kind.TIMER || next.kind == IslandItem.Kind.RECORDING) ticking = next.hasChronometer() && next.pausedMs < 0;
             if (rebuild) { rebuild(); setOwnerVisible(ownerVisible); return; }
             for (Binding binding : bindings) binding.update(nowElapsed);
             for (AnimationTarget animation : animated) animation.step(nowElapsed);
-            measure();
+            if (container.isLayoutRequested() || container.getMeasuredHeight() <= 0) measure();
         }
         public boolean hasReadyIncomingControls() {
-            if (!incoming || released || failure != null || item == null || !HyperOsIncomingCalls.isIncoming(item)) return false;
+            if (!incoming || released || failure != null || item == null || !HyperOsIncomingCalls.isBridgeItem(item)) return false;
             if (buttons.size() != 2) return false;
             for (ActionBinding button : buttons) if (!button.ready()) return false;
             return true;
@@ -240,15 +242,35 @@ public final class HyperOsCardFactory {
     }
     private static long fingerprint(IslandItem item) {
         if (item == null) return 0;
-        long hash = item.contentVersion;
-        for (CharSequence text : new CharSequence[]{item.title, item.subtitle, item.overline}) hash = hash * 31 + (text == null ? 0 : text.toString().hashCode());
-        hash = hash * 31 + System.identityHashCode(item.cardImage);
-        hash = hash * 31 + System.identityHashCode(item.cardIcon);
-        hash = hash * 31 + System.identityHashCode(item.art);
+        long hash = item.kind == null ? 0 : item.kind.ordinal() + 1;
+        hash = hash * 31 + (item.recorder ? 1 : 0);
+        hash = hash * 31 + (item.hasChronometer() ? 1 : 0);
+        if (item.kind == IslandItem.Kind.TIMER) {
+            HyperOsNative.ClockCardPlan plan = HyperOsNative.clockCardPlan(item);
+            hash = hash * 31 + plan.expanded.hashCode();
+            hash = hash * 31 + (plan.autoplay ? 1 : 0);
+            hash = hash * 31 + plan.type;
+            hash = hash * 31 + plan.grammar;
+        }
+        boolean animCard = item.recorder || item.kind == IslandItem.Kind.RECORDING || item.kind == IslandItem.Kind.TIMER;
+        if (!animCard) {
+            for (CharSequence text : new CharSequence[]{item.title, item.subtitle, item.overline})
+                hash = hash * 31 + (text == null ? 0 : text.toString().hashCode());
+            hash = hash * 31 + System.identityHashCode(item.cardImage);
+            hash = hash * 31 + System.identityHashCode(item.cardIcon);
+            hash = hash * 31 + System.identityHashCode(item.art);
+        } else {
+            if (!item.hasChronometer() || item.recorderSaved) {
+                hash = hash * 31 + (item.title == null ? 0 : item.title.toString().hashCode());
+            }
+            hash = hash * 31 + (item.subtitle == null ? 0 : item.subtitle.toString().hashCode());
+        }
         for (IslandItem.Action action : item.actions) {
             hash = hash * 31 + (action.title == null ? 0 : action.title.toString().hashCode());
-            hash = hash * 31 + System.identityHashCode(action.intent);
-            hash = hash * 31 + System.identityHashCode(action.runnable);
+            hash = hash * 31 + action.glyph;
+            hash = hash * 31 + (action.destructive ? 1 : 0);
+            hash = hash * 31 + (action.active ? 1 : 0);
+            hash = hash * 31 + ((action.intent != null || action.runnable != null) ? 1 : 0);
         }
         hash = hash * 31 + item.actions.size();
         hash = hash * 31 + (item.chronoCountDown ? 1 : 0);
@@ -417,17 +439,22 @@ public final class HyperOsCardFactory {
             }
         });
         if (card.incoming) {
+            HyperOsCallBackground background=new HyperOsCallBackground(card.context);
+            background.setAnimation(asset(card.context,"plugin"),null,true,true,0);
+            background.setAnchor(find(r,body,"answer_call"));
+            card.container.addView(background,new FrameLayout.LayoutParams(-1,-1));
+            card.animated.add(background);
             callButton(card, body, "reject_call", "ic_focus_reject_dark", 0);
             callButton(card, body, "answer_call", "ic_focus_answer_dark", 1);
         } else {
-            int speaker = actionIndex(card.item, 10, false);
-            int hangup = actionIndex(card.item, 9, true);
+            final int hangup = actionIndex(card.item, 9, true, -1);
+            int speaker = actionIndex(card.item, 10, false, hangup);
             callButton(card, body, "audio", "ic_focus_speaker_dark", speaker);
             callButton(card, body, "reject_active_call", "ic_focus_reject_dark", hangup);
             final View speakerView = find(r, body, "audio");
             card.bindings.add(new Binding() {
                 @Override public void update(long now) {
-                    int index = actionIndex(card.item, 10, false);
+                    int index = actionIndex(card.item, 10, false, hangup);
                     boolean active = index >= 0 && card.item.actions.get(index).active;
                     Drawable image = drawable(r, active ? "ic_focus_speaker_on_dark" : "ic_focus_speaker_dark");
                     if (speakerView instanceof ImageView) ((ImageView)speakerView).setImageDrawable(image);
@@ -443,9 +470,9 @@ public final class HyperOsCardFactory {
         }
         card.add(body);
     }
-    private static int actionIndex(IslandItem item, int glyph, boolean destructive) {
-        for (int i = 0; i < item.actions.size(); i++) if (item.actions.get(i).glyph == glyph) return i;
-        for (int i = 0; i < item.actions.size(); i++) if (item.actions.get(i).destructive == destructive) return i;
+    private static int actionIndex(IslandItem item, int glyph, boolean destructive, int excludeIndex) {
+        for (int i = 0; i < item.actions.size(); i++) if (i != excludeIndex && item.actions.get(i).glyph == glyph) return i;
+        for (int i = 0; i < item.actions.size(); i++) if (i != excludeIndex && item.actions.get(i).destructive == destructive) return i;
         return -1;
     }
     private static void callButton(Card card, View parent, String name, String icon, int index) {
@@ -557,7 +584,11 @@ public final class HyperOsCardFactory {
             for (int i = 0; i < item.actions.size(); i++) {
                 IslandItem.Action action = item.actions.get(i);
                 textButtons |= action.glyph == 0 && action.icon == null;
-                actions.put(new JSONObject().put("__itemAction", i));
+                JSONObject entry = new JSONObject().put("__itemAction", i)
+                        .put("actionTitleColor", "#FFFFFF")
+                        .put("actionBgColor", action.destructive ? "#33FF3B30" : "#1EFFFFFF")
+                        .put("actionBgPressColor", action.destructive ? "#4DFF3B30" : "#2EFFFFFF");
+                actions.put(entry);
             }
             result.put(textButtons ? "textButton" : "actions", actions);
         }
@@ -1022,22 +1053,23 @@ public final class HyperOsCardFactory {
             @Override public void onClick(View view) { if (!card.released && card.item.trailingTap != null) card.item.trailingTap.run(); }
         });
         if (seamless != null) card.disposals.add(new Runnable() { @Override public void run() { seamless.setOnClickListener(null); } });
-        image(find(r, body, "icon"), card.item.appIcon);
+        View appIcon = find(r, body, "icon");
+        if (appIcon != null) appIcon.setVisibility(View.GONE);
         final ImageView album = (ImageView)find(r, body, "album_art_image");
         View albumContainer = find(r, body, "album_art");
         if (albumContainer != null) clip(albumContainer, px(r, "album_art_bg_radius", 12));
-        View appIcon = find(r, body, "icon"); if (appIcon != null) clip(appIcon, px(r, "media_app_icon_bg_radius", 6));
-        if (appIcon != null && appIcon.getLayoutParams() instanceof FrameLayout.LayoutParams) {
-            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams)appIcon.getLayoutParams();
-            params.gravity = Gravity.END | Gravity.BOTTOM;
-            params.bottomMargin = px(r, "header_artist_margin_top", 4);
-            params.setMarginEnd(params.bottomMargin);
-            appIcon.setLayoutParams(params);
-        }
+        final float density = r.getResources().getDisplayMetrics().density;
+        final int customPadH = Math.round(18 * density), customPadV = Math.round(13 * density);
         for (int slot = 0; slot < 5; slot++) {
             final int position = slot;
             final View button = find(r, body, "action" + slot);
             if (button == null) continue;
+            if ((slot == 0 || slot == 4) && button instanceof ImageView) {
+                ImageView iv = (ImageView)button;
+                iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                iv.setPadding(customPadH, customPadV, customPadH, customPadV);
+                iv.setImageTintList(ColorStateList.valueOf(0xe5ffffff));
+            }
             button.setOnClickListener(new View.OnClickListener() {
                 @Override public void onClick(View clicked) {
                     Runnable action = card.released ? null : mediaAction(card, position);
@@ -1068,6 +1100,7 @@ public final class HyperOsCardFactory {
         final Drawable nextIcon = drawable(r, "ic_media_next");
         final Drawable playIcon = drawable(r, "ic_media_play_button");
         final Drawable pauseIcon = drawable(r, "ic_media_pause_button");
+        final Drawable seamlessFallback = drawable(r, "ic_media_seamless");
         card.bindings.add(new Binding() {
             Bitmap previousArt;
             final Drawable[] icons = new Drawable[5];
@@ -1080,7 +1113,8 @@ public final class HyperOsCardFactory {
                     seamless.setEnabled(card.item.trailingTap != null);
                     gone(r, body, "media_seamless_text");
                     seamless.setContentDescription(card.item.trailingText == null ? "Audio output" : card.item.trailingText);
-                    if (card.item.rightImage != null) image(find(r, body, "media_seamless_image"), card.item.rightImage);
+                    Drawable routeIcon = card.item.rightImage != null ? card.item.rightImage : seamlessFallback;
+                    if (routeIcon != null) image(find(r, body, "media_seamless_image"), routeIcon);
                 }
                 if (album != null && previousArt != card.item.art) {
                     previousArt = card.item.art; album.setImageBitmap(previousArt);
@@ -1096,10 +1130,11 @@ public final class HyperOsCardFactory {
                     View button = find(r, body, "action" + slot);
                     if (button == null) continue;
                     Runnable callback = mediaAction(card, slot);
-                    button.setVisibility(callback == null ? View.GONE : View.VISIBLE); button.setEnabled(callback != null);
                     Drawable icon = slot == 1 ? previousIcon : slot == 2 ? card.item.playing ? pauseIcon : playIcon : slot == 3 ? nextIcon : null;
                     if (slot == 0 && card.item.mediaCustom.size() > 0) icon = card.item.mediaCustom.get(0).icon;
                     if (slot == 4 && card.item.mediaCustom.size() > 1) icon = card.item.mediaCustom.get(1).icon;
+                    boolean show = callback != null && ((slot != 0 && slot != 4) || icon != null);
+                    button.setVisibility(show ? View.VISIBLE : View.GONE); button.setEnabled(show);
                     if (button instanceof ImageView && icon != icons[slot]) {
                         icons[slot] = icon; ((ImageView)button).setImageDrawable(icon);
                     }

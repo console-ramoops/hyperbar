@@ -29,7 +29,7 @@ public final class HyperOsFlashlightEffect extends FrameLayout implements HyperO
     private final long constructedElapsed = SystemClock.elapsedRealtime();
     private RuntimeShader shader;
     private Bitmap iconTexture, glowTexture;
-    private long handle;
+    private long handle, lastTimestampMs;
     private boolean ownerVisible = true, nativeVisible, displayVisible, lit = true, needsFrames, released;
 
     public HyperOsFlashlightEffect(Context context, AttributeSet attributes) {
@@ -85,8 +85,10 @@ public final class HyperOsFlashlightEffect extends FrameLayout implements HyperO
 
     @Override public void step(long nowElapsed) {
         if (released || !displayVisible || handle == 0 || shader == null) return;
-        needsFrames = HyperOsNative.nativeFlashlightFrame(handle, nowElapsed * 1_000_000L, frameNanos(), packet);
-        shader.setFloatUniform("uTime", (nowElapsed - constructedElapsed) / 1000f);
+        long ts = Math.max(lastTimestampMs, nowElapsed);
+        lastTimestampMs = ts;
+        needsFrames = HyperOsNative.nativeFlashlightFrame(handle, ts * 1_000_000L, frameNanos(), packet);
+        shader.setFloatUniform("uTime", (ts - constructedElapsed) / 1000f);
         shader.setFloatUniform("uOffset", offsets[0], offsets[1]);
         shader.setFloatUniform("uEffectProgress", packet[0]);
         shader.setIntUniform("uRTL", layer.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL ? 1 : 0);
@@ -128,7 +130,8 @@ public final class HyperOsFlashlightEffect extends FrameLayout implements HyperO
         if (released || handle == 0) return;
         boolean visible = ownerVisible && isShown(), running = visible && lit;
         if (nativeVisible == running && displayVisible == visible) return;
-        long nowElapsed = SystemClock.elapsedRealtime();
+        long nowElapsed = Math.max(lastTimestampMs, SystemClock.elapsedRealtime());
+        lastTimestampMs = nowElapsed;
         HyperOsNative.nativeSetFlashlightVisible(handle, running, nowElapsed * 1_000_000L);
         nativeVisible = running;displayVisible = visible;
         needsFrames = running;
@@ -147,6 +150,7 @@ public final class HyperOsFlashlightEffect extends FrameLayout implements HyperO
         layer.setRenderEffect(null);
         if (handle != 0) HyperOsNative.nativeDestroyFlashlight(handle);
         handle = 0;
+        lastTimestampMs = 0;
         nativeVisible = false;
         displayVisible = false;
         needsFrames = false;

@@ -86,6 +86,10 @@ public final class HyperOsNative {
     /** Packet: progress, then beam1/5/6, each PointF2,LineY,E,Highband,RGB3,Alpha,ScaleX,Shift,Dispersion. */
     public static native boolean nativeFlashlightFrame(long handle,long nowNanos,long frameNanos,float[] out);
     public static native void nativeDestroyFlashlight(long handle);
+    public static native long nativeCreateWave();
+    /** Events: 0 frame, 1 source ShaderDriver.init, 2 stop. */
+    public static native float nativeWaveFrame(long handle,long nowMs,int event);
+    public static native void nativeDestroyWave(long handle);
     public static native void nativeDestroyGlow(long handle);
     public static native boolean nativeGlowFrame(long handle, long nowMs, int event, float animationScale, float[] out);
     public static ClockCardPlan clockCardPlan(IslandItem item){

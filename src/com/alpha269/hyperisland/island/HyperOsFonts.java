@@ -16,8 +16,8 @@ import java.util.WeakHashMap;
 /** Donor FontWght/MultiLangHelper policy; Android retains shaping and text spacing. */
 public final class HyperOsFonts {
     private static final String[] GRADES={"thin","extralight","light","normal","regular","medium","demibold","semibold","bold","heavy"};
-    private static final int[] LIGHT={150,200,250,305,330,380,450,520,630,700};
-    private static final int[] DARK={150,175,225,285,310,360,430,500,600,650};
+    private static final int[] LIGHT={150,185,220,265,290,330,380,440,520,580};
+    private static final int[] DARK={150,170,205,250,275,315,360,420,495,550};
     private static final String LATIN_LANGUAGES="az ms bs ca cs da de et en es eu fr gl ha hr id in it lv lt hu mt nl nb uz pl pt ro sq sk sl fi sv vi tr el be bg kk mk ru sr uk";
     private static final Map<String,Typeface> FACES=new LinkedHashMap<String,Typeface>(16,.75f,true){
         @Override protected boolean removeEldestEntry(Map.Entry<String,Typeface> entry){return size()>48;}
@@ -65,7 +65,7 @@ public final class HyperOsFonts {
         return face(context,HyperOsAssets.fonts(context),family,Typeface.NORMAL);
     }
     public static Typeface face(Context context,File directory,String family,int requestedStyle){
-        if("misans-condensed".equals(family))return build(directory,"MiSansCondensed2T.ttf",450,30,false,
+        if("misans-condensed".equals(family))return build(directory,"MiSansCondensed2T.ttf",360,30,false,
             "condensed:"+locale(context).toLanguageTag()+':'+night(context));
         int axis=namedAxis(context,family,requestedStyle);if(axis<0)return null;
         return build(directory,namedFilename(context),axis,0,(requestedStyle&Typeface.ITALIC)!=0,
@@ -73,15 +73,22 @@ public final class HyperOsFonts {
     }
     /** Source BaseIslandModuleViewHolder uses this explicit file/axis for compact digits. */
     public static Typeface fixedDigits(Context context){return fixedDigits(HyperOsAssets.fonts(context));}
-    public static Typeface fixedDigits(File directory){return build(directory,"MiSansVF.ttf",450,0,false,"island-fixed-digits");}
+    public static Typeface fixedDigits(File directory){return build(directory,"MiSansVF.ttf",360,0,false,"island-fixed-digits");}
 
     private static synchronized Typeface build(File directory,String name,int axis,int width,boolean italic,String profile){
+        if(directory==null)return Typeface.SANS_SERIF;
         File font=new File(directory,name);
-        if(!font.isFile())throw new IllegalStateException("Missing exact HyperOS font "+font);
+        if(!font.isFile()){
+            for(String alt:new String[]{"MiSansLatinVF.ttf","MiSansVF.ttf","MiSansCondensed2T.ttf"}){
+                File candidate=new File(directory,alt);
+                if(candidate.isFile()){font=candidate;name=alt;width=0;break;}
+            }
+            if(!font.isFile())return Typeface.SANS_SERIF;
+        }
         String[] fallbacks=width>0?new String[]{"MiSansLatinVF.ttf","MiSansVF.ttf"}:
             "MiSansLatinVF.ttf".equals(name)?new String[]{"MiSansVF.ttf"}:new String[]{"MiSansLatinVF.ttf"};
         String key=identity(font)+':'+axis+':'+width+':'+italic+':'+profile;
-        for(String fallback:fallbacks)key+=':'+identity(new File(directory,fallback));
+        for(String fallback:fallbacks){File fb=new File(directory,fallback);if(fb.isFile())key+=':'+identity(fb);}
         Typeface cached=FACES.get(key);if(cached!=null)return cached;
         try {
             Font primary=font(font,axis,width,italic);
@@ -90,11 +97,16 @@ public final class HyperOsFonts {
             // Condensed has only132 characters and needs the same donor fallback.
             // Explicit families prevent a Samsung FlipFont DEFAULT change from
             // replacing missing punctuation/CJK in an otherwise identical face.
-            for(String fallback:fallbacks)builder.addCustomFallback(new FontFamily.Builder(font(new File(directory,fallback),axis,0,italic)).build());
+            for(String fallback:fallbacks){
+                File fb=new File(directory,fallback);
+                if(fb.isFile()&&!fb.equals(font))builder.addCustomFallback(new FontFamily.Builder(font(fb,axis,0,italic)).build());
+            }
             Typeface face=builder.setStyle(primary.getStyle()).setSystemFallback("sans-serif").build();
-            if(face==null)throw new IllegalStateException("Could not decode HyperOS font "+font);
+            if(face==null)return Typeface.SANS_SERIF;
             FACES.put(key,face);return face;
-        } catch(java.io.IOException failure){throw new IllegalStateException("Could not decode HyperOS font "+font,failure);}
+        } catch(Throwable failure){
+            return Typeface.SANS_SERIF;
+        }
     }
     private static String identity(File font){return font.getAbsolutePath()+':'+font.length()+':'+font.lastModified();}
     private static Font font(File file,int axis,int width,boolean italic)throws java.io.IOException{

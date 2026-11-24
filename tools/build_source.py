@@ -51,7 +51,7 @@ def write(output,name,data,stored=False):
         alignment=16384 if name.endswith('.so') else 4
         offset=output.fp.tell()+30+len(name.encode('utf-8'));padding=(alignment-(offset+6)%alignment)%alignment
         info.extra=struct.pack('<HHH',0xd935,padding+2,alignment)+bytes(padding)
-    output.writestr(info,data)
+    output.writestr(info,data,compresslevel=9 if not stored else None)
 unsigned=BUILD/'HyperBar-source-unsigned.test-package'
 with (zipfile.ZipFile(BUILD/'resources.apk') as resources,
     zipfile.ZipFile(ROOT/'build/hyperos-assets.zip') as assets,

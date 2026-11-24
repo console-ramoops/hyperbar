@@ -84,11 +84,11 @@ public final class HyperOsSnapshotBlur implements AutoCloseable {
     private final View.OnLayoutChangeListener layoutListener;
     private Snapshot snapshot;
     private Request requested,pending;
-    private boolean active,busy,closed,glassEnabled;
-    private long generation,lastActive,lastAttempt,lastGeometryCheck;
+    private boolean active,busy,closed,glassEnabled,animating,prewarming;
+    private long generation,lastActive,lastAttempt,lastGeometryCheck,lastPrewarm;
     private final Runnable glassRefresh=new Runnable(){@Override public void run(){
-        synchronized(HyperOsSnapshotBlur.this){if(closed||!active||!glassEnabled)return;if(!busy)refresh();}
-        main.postDelayed(this,100);
+        synchronized(HyperOsSnapshotBlur.this){if(closed||!active||!glassEnabled)return;if(!busy&&!animating)refresh();}
+        main.postDelayed(this,250);
     }};
 
     public HyperOsSnapshotBlur(View owner,Runnable invalidated) {
@@ -115,25 +115,46 @@ public final class HyperOsSnapshotBlur implements AutoCloseable {
     public void setGlassEnabled(boolean value){
         if(!onMain()){main.post(()->setGlassEnabled(value));return;}
         synchronized(this){if(closed||glassEnabled==value)return;glassEnabled=value;generation++;snapshot=null;requested=null;pending=null;}
-        main.removeCallbacks(glassRefresh);if(active){refresh();if(value)main.postDelayed(glassRefresh,100);}
+        main.removeCallbacks(glassRefresh);if(active){refresh();if(value)main.postDelayed(glassRefresh,250);}
+    }
+    public synchronized void setAnimating(boolean value){animating=value;}
+    public void prewarm() {
+        if(!onMain()){main.post(this::prewarm);return;}
+        View view=owner.get();
+        if(view==null)return;
+        synchronized(this) {
+            if(closed||active||busy)return;
+            long now=SystemClock.uptimeMillis();
+            if(snapshot!=null&&now-lastPrewarm<600)return;
+            Request request=geometry(view,generation+1);
+            if(request==null)return;
+            generation++;lastPrewarm=now;lastAttempt=now;lastGeometryCheck=now;
+            requested=request;prewarming=true;pending=null;
+            begin(request);
+        }
     }
 
     public void setActive(final boolean value) {
         if(!onMain()){main.post(new Runnable(){@Override public void run(){setActive(value);}});return;}
-        boolean opened,resumed;
+        boolean opened,resumed,warmReady=false;
         synchronized(this) {
             if(closed)return;
-            if(!value&&!active)return;
+            if(!value&&!active){prewarming=false;return;}
             long now=SystemClock.uptimeMillis();opened=value&&!active;
             resumed=value&&active&&lastActive>0&&now-lastActive>RETRY_MS;
             active=value;if(value)lastActive=now;
+            if(value&&opened){
+                warmReady=snapshot!=null&&now-lastPrewarm<1500;
+                if(!warmReady&&prewarming&&busy)warmReady=true;
+            }
+            prewarming=false;
             if(!value) {
-                generation++;pending=null;snapshot=null;requested=null;
+                generation++;pending=null;snapshot=null;requested=null;lastPrewarm=0;
             }
         }
         if(!value){main.removeCallbacks(glassRefresh);notifyChanged();return;}
-        if(opened&&glassEnabled){main.removeCallbacks(glassRefresh);main.postDelayed(glassRefresh,100);}
-        if(opened||resumed)refresh();else checkGeometry(false);
+        if(opened&&glassEnabled){main.removeCallbacks(glassRefresh);main.postDelayed(glassRefresh,250);}
+        if((opened&&!warmReady)||resumed)refresh();else checkGeometry(false);
     }
 
     public void refresh() {
@@ -225,16 +246,15 @@ public final class HyperOsSnapshotBlur implements AutoCloseable {
     }
     private static Processed processGlass(Bitmap shot,int classicRadius)throws Exception{
         if(shot==null||shot.isRecycled())throw new IllegalStateException("No screenshot");
-        Bitmap readable=null,a=null,b=null,c=null;
+        Bitmap readable=null,b=null,c=null;
         try{
             readable=shot.getConfig()==Bitmap.Config.HARDWARE?shot.copy(Bitmap.Config.ARGB_8888,false):shot;
             int w=readable.getWidth(),h=readable.getHeight();if((long)w*h>MAX_PIXELS)throw new IllegalArgumentException("Screenshot dimensions out of range");
             int[] raw=new int[w*h];readable.getPixels(raw,0,w,0,0,w,h);
-            a=blurCopy(raw,w,h,classicRadius);
             b=blurCopy(raw,w,h,Math.max(2,Math.round(50/(2f*DOWNSAMPLE))));
             c=blurCopy(raw,w,h,Math.max(2,Math.round(500/(2f*DOWNSAMPLE))));
-            return new Processed(a,b,c);
-        }catch(Throwable failed){recycle(a);recycle(b);recycle(c);throw failed;}
+            return new Processed(b,b,c);
+        }catch(Throwable failed){recycle(b);recycle(c);throw failed;}
         finally{if(readable!=shot)recycle(readable);recycle(shot);}
     }
     private static Bitmap blurCopy(int[] raw,int w,int h,int radius)throws Exception{
@@ -245,13 +265,13 @@ public final class HyperOsSnapshotBlur implements AutoCloseable {
         boolean changed=false;
         synchronized(this) {
             busy=false;View view=owner.get();
-            boolean valid=!closed&&active&&view!=null&&(testCapture||view.isAttachedToWindow())
+            boolean valid=!closed&&(active||prewarming)&&view!=null&&(testCapture||view.isAttachedToWindow())
                 &&request.generation==generation;
             if(valid) {
                 Request current=geometry(view,generation);
                 if(current==null||!request.sameGeometry(current)) {
                     valid=false;recycle(completed);completed=null;
-                    refresh();
+                    if(active)refresh();
                 }
             }
             if(valid) {
@@ -265,6 +285,12 @@ public final class HyperOsSnapshotBlur implements AutoCloseable {
             }
         }
         if(changed)notifyChanged();
+    }
+
+    public synchronized boolean hasTexture(boolean glass){
+        if(snapshot==null)return false;
+        if(glass)return snapshot.refract!=null&&!snapshot.refract.isRecycled()&&snapshot.color!=null&&!snapshot.color.isRecycled();
+        return snapshot.bitmap!=null&&!snapshot.bitmap.isRecycled();
     }
 
     public synchronized Bitmap bitmap() {

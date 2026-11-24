@@ -78,8 +78,8 @@ public final class HyperOsCompactFactory {
     public static synchronized void unregister(String key){PAYLOADS.remove(key);}
     private static synchronized Payload registered(String key){return PAYLOADS.get(key);}
     private static final class Payload {
-        final JSONObject full;final Bundle pictures;final long version,pictureFingerprint;final String encoded;final boolean nativeIsland;
-        Payload(JSONObject full,Bundle pictures,long version,String encoded,long pictureFingerprint){this.full=full;this.pictures=pictures;this.version=version;this.encoded=encoded;this.pictureFingerprint=pictureFingerprint;nativeIsland=island(full)!=null;}
+        final JSONObject full;final Bundle pictures;final long version,pictureFingerprint;final String encoded,chargingShape;final boolean nativeIsland;
+        Payload(JSONObject full,Bundle pictures,long version,String encoded,long pictureFingerprint){this.full=full;this.pictures=pictures;this.version=version;this.encoded=encoded;this.pictureFingerprint=pictureFingerprint;nativeIsland=island(full)!=null;chargingShape=chargingShape(full);}
     }
     public static Compact create(Context context,IslandItem item,boolean small){
         return create(context,item,small,HyperOsAssets.plugin(context),HyperOsAssets.fonts(context));
@@ -142,26 +142,46 @@ public final class HyperOsCompactFactory {
         public String leftModule(){return left==null?"":left.type;}
         public String rightModule(){return right==null?"":right.type;}
         public void layout(int leftWidth,int cutoutWidth,int rightWidth,int height){
-            if(released||failure!=null)return;if(smallOnly){heightAllocated=Math.max(1,height);exact(smallBody,dim("small_island_width"),heightAllocated);for(Effect effect:effects)effect.size();return;}if(template==null)return;
+            if(released||failure!=null)return;
+            int smallSize=Math.max(dim("small_island_width"),Math.max(1,height));
+            if(smallOnly){heightAllocated=Math.max(1,height);exact(smallBody,smallSize,heightAllocated);for(Effect effect:effects)effect.size();return;}if(template==null)return;
             leftAllocated=Math.max(0,leftWidth);rightAllocated=Math.max(0,rightWidth);cutoutAllocated=Math.max(0,cutoutWidth);heightAllocated=Math.max(1,height);
             setArea(leftArea,leftAllocated);setArea(cutoutArea,cutoutAllocated);setArea(rightArea,rightAllocated);
             if(left!=null)left.fit(Math.max(0,leftAllocated-padding(leftArea)),heightAllocated);
             if(right!=null)right.fit(Math.max(0,rightAllocated-padding(rightArea)),heightAllocated);
             int width=leftAllocated+cutoutAllocated+rightAllocated;
-            exact(body,width,heightAllocated);exact(smallBody,dim("small_island_width"),heightAllocated);
+            exact(body,width,heightAllocated);exact(smallBody,smallSize,heightAllocated);
             for(Effect effect:effects)effect.size();
         }
         public void update(IslandItem next,long nowElapsed){
             if(released||next==null)return;
             Payload nextPayload=registered(next.key);String nextStructure=shape(next,nextPayload);
-            boolean rebuild=!nextStructure.equals(structure);item=next;
-            if(rebuild){structure=nextStructure;payload=nextPayload;rebuild(nowElapsed);}
+            boolean rebuild=!nextStructure.equals(structure);item=next;payload=nextPayload;
+            boolean textChanged=rebuild;
+            if(rebuild){structure=nextStructure;rebuild(nowElapsed);}
+            else if(right!=null&&right.device!=null&&!right.device.power){
+                try{
+                    island=payload==null||!payload.nativeIsland?canonical(nowElapsed):island(payload.full);
+                    JSONObject big=island.optJSONObject("bigIslandArea"),info=big==null?null:big.optJSONObject("imageTextInfoRight");
+                    JSONObject picture=info==null?null:info.optJSONObject("picInfo"),text=info==null?null:info.optJSONObject("textInfo");
+                    if(picture!=null&&right.device.refresh(text==null?new JSONObject():text,picture.optString("pic")))textChanged=true;
+                    if(left!=null&&left.text!=null&&big!=null){
+                        JSONObject leftInfo=big.optJSONObject("imageTextInfoLeft"),leftTextInfo=leftInfo==null?null:leftInfo.optJSONObject("textInfo");
+                        if(leftTextInfo!=null&&left.text.setTitle(leftTextInfo.optString("title","")))textChanged=true;
+                    }
+                }catch(Exception invalid){failure="Could not update retained charger: "+invalid.getMessage();}
+            }
             if(failure!=null)return;
-            for(ClockBinding clock:clocks)clock.update(nowElapsed);
+            if(!rebuild&&(payload==null||!payload.nativeIsland)&&item.hasChronometer()&&item.pausedMs<0){
+                for(ClockBinding clock:clocks)clock.clock.syncBase(item.chronoBase);
+            }
+            for(ClockBinding clock:clocks)if(clock.update(nowElapsed))textChanged=true;
             for(HyperOsLottieView animation:animations){boolean visible=ownerVisible&&visibleOwner(animation);animation.setOwnerVisible(visible);if(visible)animation.step(nowElapsed);}
             for(Effect effect:effects)if(ownerVisible&&visibleOwner(effect.target))effect.frame(nowElapsed);
-            measureNatural();
-            if(heightAllocated>0)layout(leftAllocated,cutoutAllocated,rightAllocated,heightAllocated);
+            if(textChanged||heightAllocated<=0){
+                measureNatural();
+                if(heightAllocated>0)layout(leftAllocated,cutoutAllocated,rightAllocated,heightAllocated);
+            }
             requestPalette(next.art);
         }
         public boolean needsFrames(){
@@ -177,11 +197,13 @@ public final class HyperOsCompactFactory {
             if(bigVisible==big&&smallVisible==small)return;bigVisible=big;smallVisible=small;
             for(HyperOsLottieView animation:animations)animation.setOwnerVisible(ownerVisible&&visibleOwner(animation));
             for(Video video:videos)video.setOwnerVisible(ownerVisible&&visibleOwner(video));
+            for(Effect effect:effects)if(!ownerVisible||!visibleOwner(effect.target))effect.stop();
         }
         public void setOwnerVisible(boolean visible){
             if(ownerVisible==visible)return;ownerVisible=visible;
             for(HyperOsLottieView animation:animations)animation.setOwnerVisible(visible&&visibleOwner(animation));
             for(Video video:videos)video.setOwnerVisible(visible&&visibleOwner(video));
+            for(Effect effect:effects)if(!visible||!visibleOwner(effect.target))effect.stop();
         }
         public void release(){released=true;generation++;dispose();body.removeAllViews();smallBody.removeAllViews();}
         private void dispose(){for(HyperOsLottieView a:animations)a.release();for(Video v:videos)v.release();for(Effect e:effects)e.target.setRenderEffect(null);effects.clear();videos.clear();animations.clear();musicAnimations.clear();rows.clear();clocks.clear();icons.clear();localPictures.clear();paletteKey=null;albumDrawable=null;body.setRenderEffect(null);smallBody.setRenderEffect(null);}
@@ -245,9 +267,9 @@ public final class HyperOsCompactFactory {
                     View iconOne=find(root,"island_icon_1"),iconTwo=find(root,"island_icon_2");icon=new IconModule(iconOne,data.optJSONObject("picInfo"));new IconModule(iconTwo,data.optJSONObject("smallPicInfo"));
                     progress=(Ring)find(root,"island_progress");bindProgress(progress,data.optJSONObject("progressInfo"));return;
                 }
-                if(type.equals("modulePic")||type.equals("modulePicSmallIsland")){icon=new IconModule(root,data,side.equals("small")?smallBody:body);return;}
+                if(type.equals("modulePic")||type.equals("modulePicSmallIsland")){icon=new IconModule(root,data,side.equals("small")?smallBody:body,side.equals("small"));return;}
                 if(type.equals("moduleTextOverIcon")||type.equals("moduleSmallTextOverIcon")){
-                    icon=new IconModule(find(root,"island_container_module_icon"),data.optJSONObject("picInfo"),side.equals("small")?smallBody:body);TextView title=(TextView)find(root,"island_title");JSONObject info=data.optJSONObject("textInfo");if(info!=null){String value=info.optString("title","");boolean valid=value.length()>0&&value.length()<=3&&value.matches("[0-9]+");title.setText(valid?value:"");if(info.has("narrowFont"))HyperOsFonts.apply(title,fonts,info.optBoolean("narrowFont")?"misans-condensed":"mipro-demibold");title.setTextColor(textColor(info,false));title.setVisibility(valid?View.VISIBLE:View.GONE);}return;
+                    icon=new IconModule(find(root,"island_container_module_icon"),data.optJSONObject("picInfo"),side.equals("small")?smallBody:body,side.equals("small"));TextView title=(TextView)find(root,"island_title");JSONObject info=data.optJSONObject("textInfo");if(info!=null){String value=info.optString("title","");boolean valid=value.length()>0&&value.length()<=3&&value.matches("[0-9]+");title.setText(valid?value:"");if(info.has("narrowFont"))HyperOsFonts.apply(title,fonts,info.optBoolean("narrowFont")?"misans-condensed":"mipro-demibold");title.setTextColor(textColor(info,false));title.setVisibility(valid?View.VISIBLE:View.GONE);}return;
                 }
                 if(type.equals("moduleIconFixedWidthText")){
                     icon=new IconModule(find(root,"island_container_module_icon"),data.optJSONObject("picInfo"));JSONObject info=data.optJSONObject("textInfo");TextView title=(TextView)find(root,"fixed_width_text"),content=(TextView)find(root,"unit_text");HyperOsFonts.applyFixedDigits(title,fonts);if(info!=null){title.setText(info.optString("title",""));content.setText(info.optString("content",""));title.setVisibility(title.length()>0?0:8);content.setVisibility(content.length()>0?0:8);title.setTextColor(textColor(info,false));content.setTextColor(textColor(info,true));}return;
@@ -280,7 +302,7 @@ public final class HyperOsCompactFactory {
                     text.root.setLayoutParams(f);
                 }
             }
-            void fit(int width,int height){position();if(text!=null)text.fit(Math.max(0,width-iconWidth-(extraPic!=null&&extraPic.getVisibility()==0?dim("island_fix_icon_size"):0)));ViewGroup.LayoutParams p=root.getLayoutParams();if(p!=null){p.width=width;p.height=height;root.setLayoutParams(p);}}
+            void fit(int width,int height){position();if(device!=null)device.fit(width,height);if(text!=null)text.fit(Math.max(0,width-iconWidth-(extraPic!=null&&extraPic.getVisibility()==0?dim("island_fix_icon_size"):0)));ViewGroup.LayoutParams p=root.getLayoutParams();if(p!=null){p.width=width;p.height=height;root.setLayoutParams(p);}}
         }
 
         private final class TextRow {
@@ -297,7 +319,7 @@ public final class HyperOsCompactFactory {
                 rows.add(this);fit(natural());
             }
             int natural(){int f=width(front),t=fixed?dim("island_fixed_width"):width(title),c=width(content);return f+t+c+space(f,c,dim("island_text_padding_inner"))+(fade==null?0:fade.getPaddingLeft()+fade.getPaddingRight());}
-            void setTitle(String value){if(title!=null&&!value.contentEquals(title.getText()))title.setText(value);}
+            boolean setTitle(String value){if(title!=null&&!value.contentEquals(title.getText())){title.setText(value);return true;}return false;}
             void fit(int width){
                 if(title==null)return;if(fixed){step=0;show(title,true);show(content,width(content)>0);title.setScaleX(1);title.setScaleY(1);ViewGroup.LayoutParams t=title.getLayoutParams();t.width=dim("island_fixed_width");title.setLayoutParams(t);if(fade!=null){fade.fading=natural()>width;ViewGroup.LayoutParams p=fade.getLayoutParams();p.width=width;fade.setLayoutParams(p);}return;}
                 int padding=fade==null?0:fade.getPaddingLeft()+fade.getPaddingRight();int available=Math.max(0,width-padding),fw=width(front),tw=width(title),cw=width(content),gap=dim("island_text_padding_inner");step=fitStep(fw,tw,cw,gap,available);
@@ -313,18 +335,24 @@ public final class HyperOsCompactFactory {
         }
         private final class ClockBinding {
             final Clock clock;final TextRow text;ClockBinding(Clock clock,TextRow text){this.clock=clock;this.text=text;}
-            void update(long now){text.setTitle(clock.text(now));}
+            boolean update(long now){return text.setTitle(clock.text(now));}
         }
         private final class IconModule {
             final View root;final JSONObject data;View child;
-            IconModule(View root,JSONObject data)throws Exception{this(root,data,body);}
-            IconModule(View root,JSONObject data,View effectTarget)throws Exception{
+            IconModule(View root,JSONObject data)throws Exception{this(root,data,body,false);}
+            IconModule(View root,JSONObject data,View effectTarget,boolean smallSide)throws Exception{
                 if(root==null)throw new IllegalArgumentException("Missing source icon container");this.root=root;this.data=data;icons.add(this);if(data==null){root.setVisibility(View.GONE);return;}
                 int type=data.optInt("type",0);String pic=data.optString("pic",null),slot;
                 if(type==3&&"flash_light_icon".equals(pic))slot="island_flash_icon_stub";
                 else if(type==2||type==7)slot=type==7?"island_lottie_bigger_stub":"island_lottie_stub";
                 else if(type==1)slot="island_fix_icon_stub";else if(type==3||type==4)slot="island_icon_stub";else if(type==5)slot="island_small_icon_stub";else if(type==6)slot="island_video_stub";else slot="island_app_icon_stub";
                 child=stub(root,slot);if(child==null)throw new IllegalArgumentException("Missing source icon slot "+slot);child.setVisibility(View.VISIBLE);
+                if(smallSide&&child.getLayoutParams() instanceof FrameLayout.LayoutParams){
+                    FrameLayout.LayoutParams lp=(FrameLayout.LayoutParams)child.getLayoutParams();
+                    lp.gravity=Gravity.CENTER;
+                    lp.leftMargin=0;lp.rightMargin=0;lp.setMarginStart(0);lp.setMarginEnd(0);
+                    child.setLayoutParams(lp);
+                }
                 child.setContentDescription(data.optString("contentDescription",null));
                 if(child instanceof HyperOsLottieView){HyperOsLottieView a=(HyperOsLottieView)child;String raw=rawName(pic);a.setOwnerVisible(ownerVisible&&visibleOwner(a));a.setAnimation(source,raw,data.optBoolean("autoplay",false),data.optBoolean("loop",false),data.optInt("number",-1));a.setCompactNumber(data.optInt("number",-1));if(raw.equals("music_wave")||raw.equals("music_pause")){a.setGradient(topColor,bottomColor);musicAnimations.add(a);}animations.add(a);}
                 else if(child instanceof ImageView&&!slot.equals("island_flash_icon_stub")){Drawable icon=type==0?copy(item.appIcon!=null?item.appIcon:item.icon):picture(pic);if(icon==null)icon=copy(item.appIcon!=null?item.appIcon:item.icon);((ImageView)child).setImageDrawable(icon);if(icon==null)child.setVisibility(View.GONE);else {if("miui_media_album_icon".equals(pic))albumDrawable=icon;icon.setAutoMirrored(false);if(type==1||type==5){child.setOutlineProvider(new ViewOutlineProvider(){@Override public void getOutline(View v,Outline outline){outline.setRoundRect(0,0,v.getWidth(),v.getHeight(),dim("island_icon_radius"));}});child.setClipToOutline(true);}}}
@@ -335,16 +363,19 @@ public final class HyperOsCompactFactory {
         }
         private JSONObject canonical(long now)throws Exception{
             JSONObject big=new JSONObject(),small=new JSONObject(),result=new JSONObject().put("bigIslandArea",big).put("smallIslandArea",small);
-            String pic="hyperos-owned-icon";Drawable icon=item.icon!=null?item.icon:item.appIcon;localPictures.put(pic,icon);
-            JSONObject leftPic=new JSONObject().put("type",1).put("pic",pic),smallPic=leftPic;
-            if(item.isMedia){pic="miui_media_album_icon";Drawable album=item.art==null?item.appIcon:new BitmapDrawable(source.getResources(),item.art);if(album==null)album=drawable("ic_music_note");localPictures.put(pic,album);leftPic=new JSONObject().put("type",1).put("pic",pic);smallPic=leftPic;big.put("imageTextInfoRight",imageText(2,new JSONObject().put("type",2).put("pic",item.playing?"musicWave":"musicPause").put("autoplay",item.playing),null));}
+            String pic="hyperos-owned-icon";
+            Drawable icon=item.icon!=null?item.icon:item.appIcon!=null?item.appIcon:item.cardIcon!=null?item.cardIcon:item.cardImage;
+            if(icon==null&&item.kind==IslandItem.Kind.RECORDING)icon=drawable("ic_music_note");
+            localPictures.put(pic,icon);
+            JSONObject leftPic=new JSONObject().put("type",1).put("pic",pic),smallPic=leftPic,leftText=null;
+            if(item.isMedia){pic="miui_media_album_icon";Drawable album=item.art==null?drawable("ic_music_note"):new BitmapDrawable(source.getResources(),item.art);if(album==null)album=drawable("ic_music_note");localPictures.put(pic,album);leftPic=new JSONObject().put("type",1).put("pic",pic);smallPic=leftPic;big.put("imageTextInfoRight",imageText(2,new JSONObject().put("type",2).put("pic",item.playing?"musicWave":"musicPause").put("autoplay",item.playing),null));}
             else if(item.kind==IslandItem.Kind.CALL){
                 HyperOsResources call=callSource==null?HyperOsAssets.call(context):callSource;int id=call.id("drawable","ic_focus_small_island_call_logo");localPictures.put(pic,call.getResources().getDrawable(id,call.getTheme()));
                 leftPic.put("type",HyperOsIncomingCalls.isIncoming(item)?3:1).put("effectSrc","call");smallPic=new JSONObject().put("type",1).put("pic",pic);
                 if(item.hasChronometer()&&!HyperOsIncomingCalls.isIncoming(item))big.put("sameWidthDigitInfo",new JSONObject().put("timerInfo",itemTimer(item,now)));
-                else big.put("textInfo",new JSONObject().put("title",HyperOsIncomingCalls.isIncoming(item)?"Incoming call":item.subtitle==null?item.title:item.subtitle));
+                else big.put("textInfo",new JSONObject().put("title",HyperOsIncomingCalls.isIncoming(item)?"Incoming call":"Call"));
             }else if(item.kind==IslandItem.Kind.RECORDING){
-                if(item.recorder&&!item.recorderSaved){leftPic=new JSONObject().put("type",2).put("pic","voiceWaveSmall").put("autoplay",item.pausedMs<0);smallPic=leftPic;}
+                if(!item.recorderSaved){leftPic=new JSONObject().put("type",2).put("pic","voiceWaveSmall").put("autoplay",item.pausedMs<0);smallPic=leftPic;}
                 if(item.hasChronometer()&&!item.recorderSaved)big.put("sameWidthDigitInfo",new JSONObject().put("timerInfo",itemTimer(item,now)));else big.put("textInfo",new JSONObject().put("title",item.title));
             }else if(item.kind==IslandItem.Kind.TIMER){
                 HyperOsNative.ClockCardPlan plan=HyperOsNative.clockCardPlan(item);
@@ -353,13 +384,19 @@ public final class HyperOsCompactFactory {
                 else if(plan.grammar==1)big.put("sameWidthDigitInfo",new JSONObject().put("digit",item.clockText));
                 else big.put("textInfo",new JSONObject().put("title",item.trailingText==null?item.title:item.trailingText));
             }else if(item.kind==IslandItem.Kind.CHARGING){
-                String title=item.ringPercent>=0?item.ringPercent+"%":item.trailingText==null?String.valueOf(item.title):item.trailingText.toString();String state=String.valueOf(item.title).toLowerCase(Locale.ROOT);
+                String title=item.trailingText!=null?item.trailingText.toString():item.ringPercent>=0?item.ringPercent+"%":String.valueOf(item.title);
+                String state=String.valueOf(item.title).toLowerCase(Locale.ROOT);
                 big.put("imageTextInfoRight",imageText(4,new JSONObject().put("type",3).put("pic",state.contains("power sav")?"power_save_mode":state.contains("fast")||state.contains("quick")?"quick_charger_mode":"charger_mode"),new JSONObject().put("title",title)));
+                if(item.overline!=null&&item.overline.length()>0&&!state.contains("power sav")){
+                    leftPic=null;
+                    leftText=new JSONObject().put("title",item.overline.toString());
+                    smallPic=new JSONObject().put("type",2).put("pic","charger_icon_lottie").put("autoplay",false);
+                }
             }else if(item.torch){leftPic=new JSONObject().put("type",3).put("pic","flash_light_icon");smallPic=leftPic;}
             else if(item.trailing==IslandItem.Trailing.CHRONOMETER)big.put("sameWidthDigitInfo",new JSONObject().put("timerInfo",itemTimer(item,now)));
             else {JSONObject text=new JSONObject().put("title",item.trailingText==null?item.title:item.trailingText);if(item.subtitle!=null)text.put("content",item.subtitle);
                 if(item.progress>=0)big.put("progressTextInfo",new JSONObject().put("textInfo",text).put("progressInfo",new JSONObject().put("progress",Math.round(item.progress*100)).put("colorReach",String.format(Locale.ROOT,"#%08X",item.accent))));else big.put("textInfo",text);}
-            big.put("imageTextInfoLeft",imageText(1,leftPic,null));small.put("picInfo",smallPic);return result;
+            big.put("imageTextInfoLeft",imageText(1,leftPic,leftText));small.put("picInfo",smallPic);return result;
         }
         private void requestPalette(Bitmap art){
             if(musicAnimations.isEmpty())return;
@@ -399,12 +436,37 @@ public final class HyperOsCompactFactory {
     private static JSONObject imageText(int type,JSONObject pic,JSONObject text)throws Exception{JSONObject j=new JSONObject().put("type",type);if(pic!=null)j.put("picInfo",pic);if(text!=null)j.put("textInfo",text);return j;}
     private static JSONObject itemTimer(IslandItem item,long now)throws Exception{long epoch=System.currentTimeMillis(),elapsed=item.pausedMs>=0?item.pausedMs:item.chronoCountDown?item.chronoBase-now:now-item.chronoBase;return new JSONObject().put("timerType",(item.chronoCountDown?-1:1)*(item.pausedMs>=0?2:1)).put("timerWhen",epoch+(item.chronoCountDown?elapsed:-elapsed)).put("timerSystemCurrent",epoch);}
     private static String shape(IslandItem i,Payload p){
+        if(p!=null&&p.nativeIsland&&p.chargingShape!=null)return i.key+":charger:"+p.pictureFingerprint+':'+p.chargingShape;
         if(p!=null&&p.nativeIsland)return i.key+':'+p.version;
+        if(i.kind==IslandItem.Kind.CHARGING&&!String.valueOf(i.title).toLowerCase(Locale.ROOT).contains("power sav"))
+            return i.key+":charger:"+(p==null?0:p.version)+':'+(i.overline!=null&&i.overline.length()>0)+':'+bitmapIdentity(i.art)+':'+drawableIdentity(i.icon);
         // The media compact actually contains artwork and a waveform. Title,
         // route and position updates belong to its expanded card and must not
         // restart that waveform or replace its otherwise unchanged views.
-        if(i.isMedia)return i.key+':'+(p==null?0:p.version)+":media:"+i.playing+':'+bitmapIdentity(i.art)+':'+drawableIdentity(i.icon);
-        return i.key+':'+(p==null?0:p.version)+':'+i.kind+':'+i.playing+':'+i.pausedMs+':'+i.chronoBase+':'+i.clockStyle+':'+String.valueOf(i.clockText)+':'+i.recorderSaved+':'+i.recorder+':'+i.torch+':'+i.ringPercent+':'+i.progress+':'+String.valueOf(i.title)+':'+String.valueOf(i.subtitle)+':'+String.valueOf(i.trailingText)+':'+bitmapIdentity(i.art)+':'+drawableIdentity(i.icon);
+        if(i.isMedia)return i.key+':'+(p==null?0:p.version)+":media:"+i.playing+':'+bitmapIdentity(i.art);
+        if(i.kind==IslandItem.Kind.TIMER){
+            HyperOsNative.ClockCardPlan plan=HyperOsNative.clockCardPlan(i);
+            return i.key+':'+(p==null?0:p.version)+":timer:"+plan.left+':'+plan.small+':'+plan.autoplay+':'+plan.grammar
+                +':'+i.chronoCountDown+':'+(i.pausedMs>=0)+':'+(i.pausedMs>=0?i.pausedMs/1000L:0L)
+                +':'+(plan.grammar==1?String.valueOf(i.clockText):plan.grammar==2?String.valueOf(i.trailingText==null?i.title:i.trailingText):"");
+        }
+        if(i.kind==IslandItem.Kind.RECORDING){
+            return i.key+':'+(p==null?0:p.version)+":rec:"+i.recorder+':'+i.recorderSaved+':'+(i.pausedMs>=0)
+                +':'+(i.pausedMs>=0?i.pausedMs/1000L:0L)+':'+i.hasChronometer()
+                +':'+(i.hasChronometer()&&!i.recorderSaved?"":String.valueOf(i.title));
+        }
+        return i.key+':'+(p==null?0:p.version)+':'+i.kind+':'+i.incomingCall+':'+i.playing+':'+i.pausedMs+':'+i.chronoBase+':'+i.clockStyle+':'+String.valueOf(i.clockText)+':'+i.recorderSaved+':'+i.recorder+':'+i.torch+':'+i.ringPercent+':'+i.progress+':'+String.valueOf(i.title)+':'+String.valueOf(i.subtitle)+':'+String.valueOf(i.trailingText)+':'+bitmapIdentity(i.art)+':'+drawableIdentity(i.icon);
+    }
+    private static String chargingShape(JSONObject payload){
+        try{
+            JSONObject data=island(payload);if(data==null)return null;
+            JSONObject copy=new JSONObject(data.toString()),big=copy.optJSONObject("bigIslandArea");
+            JSONObject info=big==null?null:big.optJSONObject("imageTextInfoRight"),pic=info==null?null:info.optJSONObject("picInfo");
+            if(info==null||info.optInt("type")!=4||pic==null)return null;
+            String mode=pic.optString("pic");if(!mode.equals("charger_mode")&&!mode.equals("quick_charger_mode"))return null;
+            pic.put("pic","charger_mode");JSONObject text=info.optJSONObject("textInfo");if(text!=null)text.remove("title");
+            return copy.toString();
+        }catch(Exception invalid){return null;}
     }
     private static String bitmapIdentity(Bitmap bitmap){return bitmap==null?"none":System.identityHashCode(bitmap)+":"+bitmap.getGenerationId();}
     private static String drawableIdentity(Drawable drawable){
@@ -426,8 +488,9 @@ public final class HyperOsCompactFactory {
     private static boolean sameDirection(CharSequence text,boolean rtl){for(int i=0;i<text.length();i++){byte d=Character.getDirectionality(text.charAt(i));if(d==0)return !rtl;if(d==1||d==2)return rtl;}return true;}
     private static String rawName(String value){if(value==null)return "";switch(value){case "musicWave":return "music_wave";case "musicPause":return "music_pause";case "voiceWaveSmall":return "voice_wave_small";case "voiceWaveBig":return "voice_wave_big";case "alarmSmall":return "alarm_small";case "alarmBig":return "alarm_big";case "stopwatch":return "mark_timing";case "stopwatch_big":return "mark_timing_big";default:return value;}}
     private static final class Clock {
-        final boolean running,countDown,minute;final long base,frozen;
+        final boolean running,countDown,minute;long base;final long frozen;
         Clock(JSONObject json,long now){int type=json.optInt("timerType");running=type==1||type==-1||type==3||type==-3;countDown=type<0;minute=Math.abs(type)==3||Math.abs(type)==4;long when=json.optLong("timerWhen",System.currentTimeMillis()),current=running?System.currentTimeMillis():json.optLong("timerSystemCurrent",System.currentTimeMillis());base=now+when-current;frozen=countDown?when-current:current-when;}
+        void syncBase(long expectedBase){if(running&&Math.abs(expectedBase-base)>1500L)base=expectedBase;}
         String text(long now){long seconds=Math.max(0,running?countDown?base-now:now-base:frozen)/1000;return minute?String.format(Locale.getDefault(),"%02d:%02d",seconds/60,seconds%60):DateUtils.formatElapsedTime(seconds);}
     }
     private static final class Fade extends LinearLayout {
@@ -445,31 +508,67 @@ public final class HyperOsCompactFactory {
     private static final class Device extends FrameLayout {
         final Compact compact;final boolean power;final TextView text;View icon;View textFrame;Bitmap glow;
         Device(Context c,AttributeSet a,Compact compact,boolean power){
-            super(c,a);this.compact=compact;this.power=power;text=new TextView(c);text.setSingleLine(true);text.setGravity(Gravity.CENTER_VERTICAL);text.setTextSize(14);HyperOsFonts.apply(text,compact.fonts,"mipro-demibold");
+            super(c,a);this.compact=compact;this.power=power;setClipChildren(false);setClipToPadding(false);text=new TextView(c);text.setSingleLine(true);text.setGravity(Gravity.CENTER_VERTICAL);text.setTextSize(14);HyperOsFonts.apply(text,compact.fonts,"mipro-demibold");
             if(power){LinearLayout row=new LinearLayout(c);row.setGravity(Gravity.CENTER_VERTICAL);LinearLayout.LayoutParams t=new LinearLayout.LayoutParams(-2,-2);t.gravity=Gravity.END;t.setMarginEnd(compact.dim("power_save_text_icon_gap"));row.addView(text,t);FrameLayout iconFrame=new FrameLayout(c);icon=new View(c);iconFrame.addView(icon,new FrameLayout.LayoutParams(-1,-1));Bitmap b=compact.bitmap("power_save");LinearLayout.LayoutParams i=new LinearLayout.LayoutParams(b.getWidth(),b.getHeight());i.gravity=Gravity.END;i.setMarginEnd(compact.dim("power_save_icon_margin_end"));row.addView(iconFrame,i);addView(row,new FrameLayout.LayoutParams(-2,-2,Gravity.END|Gravity.CENTER_VERTICAL));textFrame=text;}
-            else {glow=compact.bitmap("charger_glow_icon");FrameLayout frame=new FrameLayout(c);textFrame=frame;text.setFontFeatureSettings("tnum");FrameLayout.LayoutParams t=new FrameLayout.LayoutParams(-2,-2,Gravity.END|Gravity.CENTER_VERTICAL);t.setMarginStart(compact.dim("charger_view_text_start_offset"));t.setMarginEnd(glow.getWidth()-(int)Math.floor(.2f*glow.getWidth()));frame.addView(text,t);addView(frame,new FrameLayout.LayoutParams(-2,glow.getHeight()));}
+            else {glow=compact.bitmap("charger_glow_icon");FrameLayout frame=new FrameLayout(c);frame.setClipChildren(false);frame.setClipToPadding(false);textFrame=frame;text.setFontFeatureSettings("tnum");FrameLayout.LayoutParams t=new FrameLayout.LayoutParams(-2,-2,Gravity.END|Gravity.CENTER_VERTICAL);t.setMarginStart(compact.dim("charger_view_text_start_offset"));t.setMarginEnd(glow.getWidth()-(int)Math.floor(.2f*glow.getWidth()));frame.addView(text,t);addView(frame,new FrameLayout.LayoutParams(-2,-1,Gravity.END|Gravity.CENTER_VERTICAL));}
+        }
+        private HyperOsLottieView charger;
+        boolean refresh(JSONObject data,String mode){
+            String label=data.optString("title","");
+            boolean changed=!android.text.TextUtils.equals(text.getText(),label);
+            if(changed)text.setText(label);
+            if(data.optBoolean("showHighlightColor",false))text.setTextColor(compact.textColor(data,false));
+            else text.setTextColor(Color.GREEN);
+            if(charger!=null)charger.setChargerType(mode.equals("quick_charger_mode"));
+            return changed;
         }
         void bind(JSONObject data,String mode)throws Exception{
             text.setText(data.optString("title",""));text.setTextSize(0,Math.round(14*getResources().getDisplayMetrics().density));text.setTextColor(power?compact.color("power_save_text_color",0xffff9f05):Color.GREEN);if(data.optBoolean("showHighlightColor",false))text.setTextColor(compact.textColor(data,false));
             if(power){Bitmap b=compact.bitmap("power_save");RuntimeShader s=new RuntimeShader(compact.shader("power_save_battery_icon"));s.setInputShader("uTexBattery",new BitmapShader(b,Shader.TileMode.CLAMP,Shader.TileMode.CLAMP));s.setFloatUniform("uBatterySize",b.getWidth(),b.getHeight());Effect e=new Effect(icon,s,false,"power-icon",0,0);int percent=compact.item.ringPercent;if(percent<0){android.os.BatteryManager manager=(android.os.BatteryManager)compact.context.getSystemService(Context.BATTERY_SERVICE);if(manager!=null)percent=manager.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY);}s.setFloatUniform("uBatteryPercentage",Math.max(0,Math.min(100,percent))/100f);compact.effects.add(e);RuntimeShader ts=new RuntimeShader(compact.shader("power_save_battery_text"));ts.setFloatUniform("uRippleTime",0f);compact.effects.add(new Effect(text,ts,false,"power-text",0,0));}
-            else {HyperOsLottieView lottie=new HyperOsLottieView(getContext());icon=lottie;boolean fast=mode.equals("quick_charger_mode");lottie.setAnimation(compact.source,"charger_icon_lottie",fast,false,1);lottie.setCompactNumber(1);addView(lottie,new FrameLayout.LayoutParams(glow.getWidth(),glow.getHeight(),Gravity.END));compact.animations.add(lottie);
-                RuntimeShader is=new RuntimeShader(compact.shader("charger_icon"));is.setInputShader("uChargingIconGlow",new BitmapShader(glow,Shader.TileMode.CLAMP,Shader.TileMode.CLAMP));is.setFloatUniform("uGlowSize",glow.getWidth(),glow.getHeight());is.setFloatUniform("uGlowOffset",.92f);is.setFloatUniform("uP11",0f);is.setFloatUniform("uP12",.25f);is.setFloatUniform("uP21",.5f);is.setFloatUniform("uP22",1f);compact.effects.add(new Effect(lottie,is,true,"charger-icon",glow.getWidth(),0));RuntimeShader ts=new RuntimeShader(compact.shader("charger_light_text_wave"));ts.setFloatUniform("uScale",1f);compact.effects.add(new Effect(textFrame,ts,true,"charger-text",glow.getWidth(),0));
-                text.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob)->{String prefix="charger_view_text_gradient_color_";int start=compact.color(prefix+"start",Color.WHITE),middle=compact.color(prefix+"middle",start),end=compact.color(prefix+"end",middle);text.getPaint().setShader(new LinearGradient(text.getLayoutDirection()==1?text.getWidth():0,0,text.getLayoutDirection()==1?0:text.getWidth(),0,new int[]{start,middle,end},new float[]{0,.6f,1},Shader.TileMode.CLAMP));});
+            else {
+                try{
+                    HyperOsLottieView lottie=new HyperOsLottieView(getContext());charger=lottie;icon=lottie;lottie.setAnimation(compact.source,"charger_icon_lottie",false,false,1);lottie.setCompactNumber(1);addView(lottie,new FrameLayout.LayoutParams(glow.getWidth(),glow.getHeight(),Gravity.END|Gravity.CENTER_VERTICAL));compact.animations.add(lottie);
+                    try{
+                        RuntimeShader is=new RuntimeShader(compact.shader("charger_icon"));is.setInputShader("uChargingIconGlow",new BitmapShader(glow,Shader.TileMode.CLAMP,Shader.TileMode.CLAMP));is.setFloatUniform("uGlowSize",glow.getWidth(),glow.getHeight());is.setFloatUniform("uGlowOffset",.92f);is.setFloatUniform("uP11",0f);is.setFloatUniform("uP12",.25f);is.setFloatUniform("uP21",.5f);is.setFloatUniform("uP22",1f);compact.effects.add(new Effect(lottie,is,true,"charger-icon",glow.getWidth(),0));
+                        RuntimeShader ts=new RuntimeShader(compact.shader("charger_light_text_wave"));ts.setFloatUniform("uScale",1f);compact.effects.add(new Effect(textFrame,ts,true,"charger-text",glow.getWidth(),0));
+                    }catch(Throwable ignoredShaderFallback){}
+                }catch(Throwable fallback){
+                    ImageView staticGlow=new ImageView(getContext());staticGlow.setImageBitmap(glow);icon=staticGlow;
+                    addView(staticGlow,new FrameLayout.LayoutParams(glow.getWidth(),glow.getHeight(),Gravity.END|Gravity.CENTER_VERTICAL));
+                }
+                text.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob)->{if(text.getWidth()<=0)return;String prefix="charger_view_text_gradient_color_";int start=compact.color(prefix+"start",Color.WHITE),middle=compact.color(prefix+"middle",start),end=compact.color(prefix+"end",middle);text.getPaint().setShader(new LinearGradient(text.getLayoutDirection()==1?text.getWidth():0,0,text.getLayoutDirection()==1?0:text.getWidth(),0,new int[]{start,middle,end},new float[]{0,.6f,1},Shader.TileMode.CLAMP));});
+                refresh(data,mode);
+            }
+        }
+        void fit(int width,int height){
+            int nat=natural();
+            if(width>0&&nat>width){
+                float scale=Math.max(0.72f,width/(float)nat);
+                setPivotX(getLayoutDirection()==View.LAYOUT_DIRECTION_RTL?0f:width);
+                setPivotY(height*.5f);
+                setScaleX(scale);setScaleY(scale);
+            }else{
+                setScaleX(1f);setScaleY(1f);
             }
         }
         int natural(){measure(unspecified(),unspecified());return getMeasuredWidth();}
     }
     private static final class Effect {
-        final View target;final RuntimeShader shader;final boolean animated;final String kind;final float iconWidth,offset;final long start=SystemClock.elapsedRealtime();long last=-1;float glowTime;
+        final View target;final RuntimeShader shader;final boolean animated;final String kind;final float iconWidth,offset;long start,last=-1;float glowTime;boolean running;
         Effect(View target,RuntimeShader shader,boolean animated,String kind,float iconWidth,float offset){this.target=target;this.shader=shader;this.animated=animated;this.kind=kind;this.iconWidth=iconWidth;this.offset=offset;}
-        void size(){int w=target.getWidth(),h=target.getHeight();if(w<=0||h<=0)return;shader.setFloatUniform("uResolution",w,h);boolean rtl=target.getLayoutDirection()==1;
+        void stop(){running=false;last=-1;glowTime=0;target.setRenderEffect(null);}
+        void size(){int w=target.getWidth(),h=target.getHeight();if(!running||w<=0||h<=0)return;shader.setFloatUniform("uResolution",w,h);boolean rtl=target.getLayoutDirection()==1;
             if(kind.equals("call"))shader.setFloatUniform("uRippleOrigin",rtl?Math.max(0,w-offset-iconWidth*.5f):iconWidth*.5f+offset,h*.5f);
             else if(kind.equals("charger-text"))shader.setFloatUniform("uRippleOrigin",rtl?iconWidth*.5f:Math.max(0,w-iconWidth*.5f),h*.5f);
             else if(kind.equals("power-text")){shader.setFloatUniform("uRippleOrigin",w*.86f,h*.5f);shader.setIntUniform("uRTL",rtl?1:0);}
             else if(kind.equals("power-icon"))shader.setIntUniform("uRTL",rtl?1:0);
             target.setRenderEffect(RenderEffect.createRuntimeShaderEffect(shader,"uTex"));
         }
-        void frame(long now){if(animated){if(last>=0)glowTime+=((now-last)/1000f)/2f;last=now;shader.setFloatUniform("uTime",(now-start)/1000f);if(kind.equals("charger-icon"))shader.setFloatUniform("uGlowTime",glowTime);else if(kind.equals("charger-text"))shader.setFloatUniform("uRippleTime",glowTime);}size();}
+        void frame(long now){
+            if(!target.isShown()||target.getWindowVisibility()!=View.VISIBLE){stop();return;}
+            if(!running){start=now;last=now;glowTime=0;running=true;}
+            if(animated){if(last>=0)glowTime+=((now-last)/1000f)/2f;last=now;shader.setFloatUniform("uTime",(now-start)/1000f);if(kind.equals("charger-icon"))shader.setFloatUniform("uGlowTime",glowTime);else if(kind.equals("charger-text"))shader.setFloatUniform("uRippleTime",glowTime);}size();
+        }
     }
     private static final class Video extends TextureView implements TextureView.SurfaceTextureListener {
         final Compact compact;MediaPlayer player;Surface surface;String uri;boolean loop,prepared,ownerVisible=true;

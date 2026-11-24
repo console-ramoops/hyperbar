@@ -7,6 +7,7 @@ import android.view.MotionEvent;
 public interface IslandHost {
     boolean hasMinimized();
     void onCycle(int direction);
+    default void onFocusItem(IslandItem item){}
     default void onSwipe(int direction){onCycle(direction);}
     default HyperOsPresentationQueue.Layout previewSwipe(int direction){return null;}
     void onExpandedChanged(boolean expanded);
@@ -14,6 +15,7 @@ public interface IslandHost {
     void onItemAction(IslandItem item,IslandItem.Action action);
     void onMinimize(IslandItem item);
     void onOpenItem(IslandItem item,RectF from);
+    default void onOpenCapsule(IslandItem item,RectF from){onOpenItem(item,from);}
     void onRestore();
     void onShadeDragEvent(MotionEvent event);
     void onShadeDragStart(float x,float y,long time);

@@ -1,6 +1,7 @@
 package com.alpha269.hyperisland.island;
 
 import android.app.Notification;
+import android.app.PendingIntent;
 import android.content.Context;
 import android.content.res.Resources;
 import android.text.TextUtils;
@@ -39,6 +40,29 @@ public final class HyperOsClockNotificationAdapter {
     }
     private static boolean matches(Resources resources,String name,CharSequence title){
         int id=resources.getIdentifier(name,"string",HyperOsActionSemantics.CLOCK);return id!=0&&TextUtils.equals(resources.getText(id),title);
+    }
+    public static void sourceControls(Notification notification,IslandItem item){
+        if(!HyperOsActionSemantics.CLOCK.equals(item.packageName)||(item.clockStyle!=1&&item.clockStyle!=2))return;
+        try{
+        android.os.Bundle extras=notification.extras;
+        if(extras==null||extras.getInt(HyperOsAlarmData.EXTRA_CONTROLS,0)!=HyperOsAlarmData.VERSION
+            ||HyperOsAlarmData.read(extras,item.clockStyle)==null)return;
+        IslandItem.Action dismiss=sourceAction(extras,item,HyperOsAlarmData.EXTRA_DISMISS,HyperOsAlarmData.EXTRA_DISMISS_TITLE,item.clockStyle==1?12:6,true);
+        if(dismiss==null)return;
+        IslandItem.Action snooze=item.clockStyle==1?sourceAction(extras,item,HyperOsAlarmData.EXTRA_SNOOZE,HyperOsAlarmData.EXTRA_SNOOZE_TITLE,15,false):null;
+        for(int i=item.actions.size()-1;i>=0;i--){int glyph=item.actions.get(i).glyph;
+            if(item.clockStyle==1&&(glyph==12||glyph==15)||item.clockStyle==2&&glyph==6)item.actions.remove(i);}
+        if(snooze!=null)item.actions.add(snooze);item.actions.add(dismiss);
+        }catch(RuntimeException unavailable){}
+    }
+    private static IslandItem.Action sourceAction(android.os.Bundle extras,IslandItem item,String key,String titleKey,int glyph,boolean destructive){
+        try{
+            Object value=extras.get(key);CharSequence title=extras.getCharSequence(titleKey);
+            if(!(value instanceof PendingIntent)||title==null||title.length()==0)return null;
+            PendingIntent pending=(PendingIntent)value;
+            if(!HyperOsActionSemantics.CLOCK.equals(pending.getCreatorPackage())||pending.getCreatorUid()/100000!=item.userId)return null;
+            IslandItem.Action action=new IslandItem.Action(title,null,pending,null,destructive);action.glyph=glyph;return action;
+        }catch(RuntimeException invalid){return null;}
     }
     public static void orderActions(IslandItem item){
         if(item.clockStyle!=1)return;

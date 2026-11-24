@@ -1,6 +1,7 @@
 package com.alpha269.hyperisland.xposed;
 
 import android.app.Application;
+import android.app.KeyguardManager;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -11,9 +12,11 @@ import android.content.IntentFilter;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.Process;
 import android.os.SystemClock;
 import android.telecom.Call;
+import android.telecom.VideoProfile;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -109,8 +112,9 @@ public final class HyperOsCallHooks {
                 }
             });
             int bindings = hookBinding(loader, "U9.b") + hookBinding(loader, "X9.c");
+            int launcherHooks = hookScreenLauncher(loader);
             XposedBridge.log("HyperBar incoming hooks: added=" + addedHooks + " removed=" + removedHooks
-                    + " popup=" + popupHooks + " bindings=" + bindings);
+                    + " popup=" + popupHooks + " bindings=" + bindings + " launcher=" + launcherHooks);
             XposedBridge.hookAllMethods(NotificationManager.class, "notify", new XC_MethodHook() {
                 @Override protected void beforeHookedMethod(MethodHookParam param) {
                     for (Object arg : param.args) {
@@ -133,6 +137,58 @@ public final class HyperOsCallHooks {
             // A changed vendor build is fail-open: no popup owner => no concealment.
             XposedBridge.log("HyperOS incoming popup hook unavailable: " + failure.getClass().getSimpleName());
         }
+    }
+
+    private static int hookScreenLauncher(ClassLoader loader) {
+        try {
+            final Class<?> launcher = Class.forName("l2.S", false, loader);
+            final java.lang.reflect.Method launchPopup = launcher.getDeclaredMethod("s");
+            launchPopup.setAccessible(true);
+            return XposedBridge.hookAllMethods(launcher, "r", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    if (param.args.length != 1 || !(param.args[0] instanceof Integer)) return;
+                    if (((Integer) param.args[0]).intValue() != 1) return;
+                    if (!shouldUsePopupInsteadOfFullScreen()) return;
+                    try {
+                        launchPopup.invoke(param.thisObject);
+                        param.setResult(null);
+                        XposedBridge.log("HyperBar incoming redirected unlocked full-screen launch to popup");
+                    } catch (Throwable failure) {
+                        XposedBridge.log("HyperBar incoming popup redirect fallback: " + failure.getClass().getSimpleName());
+                    }
+                }
+            }).size();
+        } catch (Throwable missing) {
+            XposedBridge.log("HyperBar incoming launcher hook unavailable: " + missing.getClass().getSimpleName());
+            return 0;
+        }
+    }
+
+    private static boolean shouldUsePopupInsteadOfFullScreen() {
+        Context app = context;
+        if (app == null) return false;
+        Call ringing = null;
+        int count = 0;
+        for (Call call : calls.keySet()) {
+            if (call.getState() == Call.STATE_RINGING) {
+                ringing = call;
+                count++;
+            }
+        }
+        if (count != 1 || ringing == null) return false;
+        try {
+            Call.Details details = ringing.getDetails();
+            if (details != null && VideoProfile.isVideo(details.getVideoState())) return false;
+        } catch (Throwable ignored) {}
+        try {
+            PowerManager pm = app.getSystemService(PowerManager.class);
+            if (pm != null && !pm.isInteractive()) return false;
+            KeyguardManager km = app.getSystemService(KeyguardManager.class);
+            if (km != null && km.isKeyguardLocked()) return false;
+        } catch (Throwable ignored) {
+            return false;
+        }
+        return true;
     }
 
     private static int hookBinding(ClassLoader loader, String name) {
@@ -285,12 +341,32 @@ public final class HyperOsCallHooks {
                     + " popup=" + (root != null) + " attached=" + (root != null && root.isAttachedToWindow())
                     + " controls=" + (controls != null) + " bridge=" + (context != null));
         }
-        if (ringingCount != 1 || controls == null || !root.isAttachedToWindow() || context == null) {
+        if (ringingCount != 1 || context == null || (currentPopup != null && (controls == null || !root.isAttachedToWindow()))) {
             clearSession();
             if (currentPopup != null) {
                 currentPopup.restore();
                 if (root == null || !root.isAttachedToWindow()) popup = null;
             }
+            return;
+        }
+        if (currentPopup == null) {
+            Session previous = session;
+            boolean changedBackend = previous == null || previous.call != ringing || previous.popup != null;
+            if (changedBackend) {
+                if (previous != null) {
+                    if (previous.popup != null) previous.popup.restore();
+                    previous.cancel();
+                }
+                try {
+                    session = new Session(ringing, tokens.get(ringing), null, null,
+                            previous == null ? 1 : previous.generation + 1);
+                } catch (Throwable failure) {
+                    session = null;
+                    emitRemoved(previous == null ? null : previous.token);
+                    return;
+                }
+            }
+            emit(false);
             return;
         }
         Session previous = session;
@@ -299,7 +375,7 @@ public final class HyperOsCallHooks {
                 || previous.decline.get() != controls.decline;
         if (changedBackend) {
             if (previous != null) {
-                previous.popup.restore();
+                if (previous.popup != null) previous.popup.restore();
                 previous.cancel();
             }
             try {
@@ -329,7 +405,7 @@ public final class HyperOsCallHooks {
         Session previous = session;
         if (previous == null) return;
         previous.lease.clear();
-        previous.popup.restore();
+        if (previous.popup != null) previous.popup.restore();
         session = null;
         emitRemoved(previous.token);
         previous.cancel();
@@ -378,12 +454,17 @@ public final class HyperOsCallHooks {
     }
 
     private static String callerName(Session current) {
-        View root = current.popup.root.get();
+        View root = current.popup == null ? null : current.popup.root.get();
         String name = root == null ? null : text(root, "name_number");
         if (name == null && root != null) name = text(root, "primary_call_name");
         if (name == null && root != null) name = text(root, "name");
         Call.Details details = current.call.getDetails();
-        if (name == null && details != null && details.getCallerDisplayName() != null) {
+        if (name == null && details != null && details.getContactDisplayName() != null
+                && details.getContactDisplayName().length() > 0) {
+            name = details.getContactDisplayName();
+        }
+        if (name == null && details != null && details.getCallerDisplayName() != null
+                && details.getCallerDisplayName().length() > 0) {
             name = details.getCallerDisplayName();
         }
         if (name == null && details != null && details.getHandle() != null) {
@@ -436,7 +517,7 @@ public final class HyperOsCallHooks {
             lastPacket = now;
         } catch (Throwable failure) {
             current.lease.clear();
-            current.popup.restore();
+            if (current.popup != null) current.popup.restore();
         }
     }
 
@@ -470,9 +551,27 @@ public final class HyperOsCallHooks {
                 || current.call.getState() != Call.STATE_RINGING) return;
         String operation = intent.getStringExtra("operation");
         if ("presentation".equals(operation)) {
-            current.lease.presented(token, generation, intent.getBooleanExtra("ready", false),
-                    intent.getBooleanExtra("visible", false), SystemClock.uptimeMillis());
-            update();
+            if (current.popup != null) {
+                current.lease.presented(token, generation, intent.getBooleanExtra("ready", false),
+                        intent.getBooleanExtra("visible", false), SystemClock.uptimeMillis());
+                update();
+            }
+            return;
+        }
+        if (current.popup == null) {
+            try {
+                if ("answer".equals(operation)) {
+                    int videoState = VideoProfile.STATE_AUDIO_ONLY;
+                    try {
+                        Call.Details details = current.call.getDetails();
+                        if (details != null) videoState = details.getVideoState();
+                    } catch (Throwable ignored) {}
+                    current.call.answer(videoState);
+                } else if ("decline".equals(operation)) {
+                    current.call.reject(false, null);
+                }
+            } catch (Throwable ignored) {}
+            main.postDelayed(new Runnable() { @Override public void run() { update(); } }, 100);
             return;
         }
         View button = "answer".equals(operation) ? current.answer.get()
@@ -486,7 +585,6 @@ public final class HyperOsCallHooks {
         current.lease.clear();
         try {
             // Verified U9.b/X9.c listeners route to Samsung j1(false,false) / w5().
-            // No Telecom accept/end-call fallback is introduced.
             if (!button.performClick()) current.popup.restore();
         } catch (Throwable failure) {
             current.popup.restore();
@@ -516,12 +614,12 @@ public final class HyperOsCallHooks {
             this.token = token;
             this.popup = popup;
             this.generation = generation;
-            this.answer = new WeakReference<View>(controls.answer);
-            this.decline = new WeakReference<View>(controls.decline);
+            this.answer = new WeakReference<View>(controls == null ? null : controls.answer);
+            this.decline = new WeakReference<View>(controls == null ? null : controls.decline);
             this.lease = new PresentationLease(token, generation);
             this.answerIntent = capability("answer", false);
             this.declineIntent = capability("decline", false);
-            this.presentationIntent = capability("presentation", true);
+            this.presentationIntent = popup == null ? null : capability("presentation", true);
         }
         PendingIntent capability(String operation, boolean mutable) {
             Intent intent = new Intent(COMMAND).setPackage(APP)
@@ -533,7 +631,7 @@ public final class HyperOsCallHooks {
         void cancel() {
             try { answerIntent.cancel(); } catch (Throwable ignored) {}
             try { declineIntent.cancel(); } catch (Throwable ignored) {}
-            try { presentationIntent.cancel(); } catch (Throwable ignored) {}
+            if (presentationIntent != null) try { presentationIntent.cancel(); } catch (Throwable ignored) {}
         }
     }
 

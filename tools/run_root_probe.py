@@ -23,7 +23,7 @@ import shlex
 command=['env','-u','LD_PRELOAD','-u','LD_LIBRARY_PATH','CLASSPATH='+str(probeapk)+':'+str(p/'probe.jar'),'/system/bin/app_process','/system/bin','com.alpha269.hyperisland.probe.RootViewIntegrationProbe',str(probeapk),str(output),selection,mode]
 subprocess.run(['su','-c',shlex.join(command)],check=True)
 subprocess.run(['su','-c',shlex.join(['chown','-R',str(os.getuid())+':'+str(os.getgid()),str(output)])],check=True)
-if mode in ['press','swipe','queue','torch']:
+if mode in ['effects','press','swipe','queue','torch']:
     report=output/(mode+'-validation.json');record=json.loads(report.read_text());record['apk_sha256']=hashlib.sha256(probeapk.read_bytes()).hexdigest()
     temporary=output/(mode+'-validation.tmp');temporary.write_text(json.dumps(record,indent=2)+'\n');temporary.replace(report);print(json.dumps(record,indent=2));sys.exit(0)
 records=json.loads((output/'composed-findings.json').read_text())

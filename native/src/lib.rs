@@ -14,6 +14,7 @@ pub mod glass;
 pub mod glow;
 pub mod music_background;
 pub mod flashlight;
+pub mod wave;
 mod pixels;
 
 use jni_sys::{jboolean, jbyteArray, jclass, jdoubleArray, jfloatArray, jintArray, jlong, jlongArray, jstring, JNIEnv};
@@ -74,6 +75,23 @@ pub extern "system" fn Java_com_alpha269_hyperisland_island_HyperOsNative_native
 }
 static NEXT_MUSIC_BACKGROUND: AtomicI64 = AtomicI64::new(1);
 static NEXT_FLASHLIGHT:AtomicI64=AtomicI64::new(1);
+static NEXT_WAVE:AtomicI64=AtomicI64::new(1);
+static WAVES:OnceLock<Mutex<HashMap<i64,wave::Wave>>>=OnceLock::new();
+fn waves()->&'static Mutex<HashMap<i64,wave::Wave>>{WAVES.get_or_init(||Mutex::new(HashMap::new()))}
+#[no_mangle]
+pub extern "system" fn Java_com_alpha269_hyperisland_island_HyperOsNative_nativeCreateWave(env:Env,_class:jclass)->jlong{
+    boundary(env,0,||{let id=NEXT_WAVE.fetch_add(1,Ordering::Relaxed);if id<=0{return Err("Wave handles exhausted".into());}
+        waves().lock().map_err(|_|"Wave registry poisoned")?.insert(id,wave::Wave::default());Ok(id)})
+}
+#[no_mangle]
+pub extern "system" fn Java_com_alpha269_hyperisland_island_HyperOsNative_nativeWaveFrame(env:Env,_class:jclass,handle:jlong,now:jlong,event:i32)->f32{
+    boundary(env,0.0,||{waves().lock().map_err(|_|"Wave registry poisoned")?.get_mut(&handle)
+        .ok_or("Wave owner is closed")?.frame(now,event).map_err(str::to_owned)})
+}
+#[no_mangle]
+pub extern "system" fn Java_com_alpha269_hyperisland_island_HyperOsNative_nativeDestroyWave(env:Env,_class:jclass,handle:jlong){
+    boundary(env,(),||{waves().lock().map_err(|_|"Wave registry poisoned")?.remove(&handle);Ok(())});
+}
 static FLASHLIGHTS:OnceLock<Mutex<flashlight::Registry>>=OnceLock::new();
 fn flashlights()->&'static Mutex<flashlight::Registry>{FLASHLIGHTS.get_or_init(||Mutex::new(flashlight::Registry::default()))}
 #[no_mangle]

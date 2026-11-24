@@ -10,14 +10,22 @@ import android.os.Bundle;
 public final class SettingsProvider extends ContentProvider {
     public static final Uri URI=Uri.parse("content://com.alpha269.hyperisland.settings");
     public static final String PREFS="hyperisland";
+    public static final String KEY_ENABLED="enabled";
+    public static final String KEY_ISLAND_BLUR="island_blur";
+    public static final String KEY_GLASS_EFFECT="glass_effect";
+    public static final String KEY_BLUETOOTH="bluetooth";
+    public static final String KEY_CHARGING_ANIM="charging_anim";
     @Override public boolean onCreate(){return true;}
     @Override public Bundle call(String method,String argument,Bundle extras) {
         if(!"values".equals(method))return Bundle.EMPTY;
         android.content.SharedPreferences prefs=getContext().getSharedPreferences(PREFS,0);
         Bundle result=new Bundle();
-        result.putBoolean("enabled",prefs.getBoolean("enabled",true));
-        result.putBoolean("incoming_calls",prefs.getBoolean("incoming_calls",true));
-        result.putBoolean("bluetooth",prefs.getBoolean("bluetooth",true));
+        result.putBoolean(KEY_ENABLED,prefs.getBoolean(KEY_ENABLED,true));
+        result.putBoolean("incoming_calls",false);
+        result.putBoolean(KEY_ISLAND_BLUR,prefs.getBoolean(KEY_ISLAND_BLUR,true));
+        result.putBoolean(KEY_GLASS_EFFECT,prefs.getBoolean(KEY_GLASS_EFFECT,false));
+        result.putBoolean(KEY_BLUETOOTH,prefs.getBoolean(KEY_BLUETOOTH,true));
+        result.putBoolean(KEY_CHARGING_ANIM,prefs.getBoolean(KEY_CHARGING_ANIM,true));
         return result;
     }
     @Override public Cursor query(Uri uri,String[] projection,String selection,String[] arguments,String order){return null;}

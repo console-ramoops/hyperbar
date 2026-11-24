@@ -14,8 +14,9 @@ public final class OneUiSignalAdapter implements AutoCloseable {
     public OneUiSignalAdapter(Observer observer){this.observer=observer;}
     public synchronized void bindStatus(Object owner)throws Exception{
         if(closed||owner==null)return;
-        if(status==null||status.owner.get()!=owner){if(status!=null)status.close();
-            status=new Binding(owner,"addCallback","removeCallback","StateListener",(method,args)->{
+        if(status==null||status.owner.get()!=owner){if(status!=null)status.close();status=null;
+            snapshotStatus(owner);
+            status=new Binding(owner,"addCallback","removeCallback","com.android.systemui.plugins.statusbar.StatusBarStateController$StateListener",(method,args)->{
                 if(closed)return;
                 if(method.equals("onStateChanged")&&args.length>0&&args[0] instanceof Number)observer.state(((Number)args[0]).intValue());
                 if(method.equals("onDozingChanged")&&args.length>0&&args[0] instanceof Boolean)observer.dozing((Boolean)args[0]);
@@ -32,12 +33,18 @@ public final class OneUiSignalAdapter implements AutoCloseable {
     public synchronized void bindShade(Object owner)throws Exception{
         if(closed||owner==null)return;
         if(shade==null||shade.owner.get()!=owner){if(shade!=null)shade.close();
-            shade=new Binding(owner,"addExpansionListener","removeExpansionListener","ShadeExpansionListener",(method,args)->{
+            shade=new Binding(owner,"addExpansionListener","removeExpansionListener","com.android.systemui.shade.ShadeExpansionListener",(method,args)->{
                 if(closed||!method.equals("onPanelExpansionChanged")||args.length==0)return;
-                Object fraction=field(args[0],"fraction");if(fraction instanceof Number)observer.shade(((Number)fraction).floatValue());
+                Object fraction=field(args[0],"fraction");
+                if(fraction instanceof Number){
+                    float value=((Number)fraction).floatValue();
+                    if(Boolean.FALSE.equals(field(args[0],"expanded"))&&Boolean.FALSE.equals(field(args[0],"tracking")))value=0f;
+                    observer.shade(value);
+                }
             });}
         Object fraction=field(owner,"fraction");if(fraction instanceof Number)observer.shade(((Number)fraction).floatValue());
     }
+    public void onShadeClosed(){if(!closed)observer.shade(0f);}
     public void snapshotWindow(Object owner){
         if(closed||owner==null||!Integer.valueOf(0).equals(field(owner,"thisDisplayId")))return;
         Object value=field(owner,"windowState");if(value instanceof Number)observer.window(((Number)value).intValue());
@@ -50,9 +57,17 @@ public final class OneUiSignalAdapter implements AutoCloseable {
         Binding(Object source,String addName,String removeName,String interfaceName,Callback callback)throws Exception{
             owner=new WeakReference<>(source);Method add=null;
             for(Method method:source.getClass().getMethods())if(method.getName().equals(addName)&&method.getParameterTypes().length==1
-                &&method.getParameterTypes()[0].isInterface()&&method.getParameterTypes()[0].getSimpleName().equals(interfaceName)){add=method;break;}
+                &&method.getParameterTypes()[0].isInterface()
+                &&(interfaceName.indexOf('.')>=0?method.getParameterTypes()[0].getName().equals(interfaceName)
+                    :method.getParameterTypes()[0].getSimpleName().equals(interfaceName))){add=method;break;}
+            // Some implementations expose only the erased CallbackController bridge.
+            Class<?> type;
+            if(add==null&&interfaceName.indexOf('.')>=0){
+                type=Class.forName(interfaceName,false,source.getClass().getClassLoader());
+                add=source.getClass().getMethod(addName,Object.class);
+            }else type=add==null?null:add.getParameterTypes()[0];
             if(add==null)throw new NoSuchMethodException(addName+"("+interfaceName+")");
-            Class<?> type=add.getParameterTypes()[0];remove=source.getClass().getMethod(removeName,type);remove.setAccessible(true);
+            remove=source.getClass().getMethod(removeName,add.getParameterTypes()[0]);remove.setAccessible(true);
             proxy=Proxy.newProxyInstance(type.getClassLoader(),new Class<?>[]{type},(self,method,args)->{
                 if(method.getDeclaringClass()==Object.class){
                     if(method.getName().equals("hashCode"))return System.identityHashCode(self);

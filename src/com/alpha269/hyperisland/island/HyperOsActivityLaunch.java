@@ -39,7 +39,54 @@ public final class HyperOsActivityLaunch {
     private static final String TAG="HyperOsActivityLaunch",DESCRIPTOR="android.window.IRemoteTransition";
     private static final Map<View,Runner> LAUNCHES=Collections.synchronizedMap(new WeakHashMap<View,Runner>());
     private static volatile SourceCallbacks callbacks;
+    private static volatile Method mSetMatrix,mSetCornerRadius,mSetFrameTimelineVsync,mRemoveSurface;
+    private static volatile boolean txMethodsResolved,rtMethodsResolved,rtAvailable;
+    private static volatile Class<?> rtParamsClass;
+    private static volatile java.lang.reflect.Constructor<?> rtApplierCtor,rtBuilderCtor;
+    private static volatile Method rtGetViewRoot,rtWithMatrix,rtWithWindowCrop,rtWithAlpha,rtWithCornerRadius,rtWithVisibility,rtBuild,rtScheduleApply;
     private HyperOsActivityLaunch(){}
+
+    private static void ensureTxMethods() {
+        if(!txMethodsResolved) {
+            try {
+                mSetMatrix=SurfaceControl.Transaction.class.getDeclaredMethod("setMatrix",SurfaceControl.class,Matrix.class,float[].class);
+                mSetMatrix.setAccessible(true);
+            } catch(Throwable ignored) {}
+            try {
+                mSetCornerRadius=SurfaceControl.Transaction.class.getDeclaredMethod("setCornerRadius",SurfaceControl.class,float.class);
+                mSetCornerRadius.setAccessible(true);
+            } catch(Throwable ignored) {}
+            try {
+                mSetFrameTimelineVsync=SurfaceControl.Transaction.class.getDeclaredMethod("setFrameTimelineVsync",long.class);
+                mSetFrameTimelineVsync.setAccessible(true);
+            } catch(Throwable ignored) {}
+            try {
+                mRemoveSurface=SurfaceControl.Transaction.class.getDeclaredMethod("remove",SurfaceControl.class);
+                mRemoveSurface.setAccessible(true);
+            } catch(Throwable ignored) {}
+            txMethodsResolved=true;
+        }
+        if(!rtMethodsResolved) {
+            try {
+                Class<?> applierClass=Class.forName("android.view.SyncRtSurfaceTransactionApplier");
+                Class<?> paramsClass=Class.forName("android.view.SyncRtSurfaceTransactionApplier$SurfaceParams");
+                Class<?> builderClass=Class.forName("android.view.SyncRtSurfaceTransactionApplier$SurfaceParams$Builder");
+                rtGetViewRoot=View.class.getDeclaredMethod("getViewRootImpl");rtGetViewRoot.setAccessible(true);
+                rtApplierCtor=applierClass.getConstructor(View.class);
+                rtBuilderCtor=builderClass.getConstructor(SurfaceControl.class);
+                rtWithMatrix=builderClass.getMethod("withMatrix",Matrix.class);
+                rtWithWindowCrop=builderClass.getMethod("withWindowCrop",Rect.class);
+                rtWithAlpha=builderClass.getMethod("withAlpha",float.class);
+                rtWithCornerRadius=builderClass.getMethod("withCornerRadius",float.class);
+                rtWithVisibility=builderClass.getMethod("withVisibility",boolean.class);
+                rtBuild=builderClass.getMethod("build");
+                rtScheduleApply=applierClass.getMethod("scheduleApply",Array.newInstance(paramsClass,0).getClass());
+                rtParamsClass=paramsClass;
+                rtAvailable=true;
+            } catch(Throwable ignored) { rtAvailable=false; }
+            rtMethodsResolved=true;
+        }
+    }
 
     /** Source layer owns the island/card crossfade; task leashes are handled here. */
     public interface SourceCallbacks {
@@ -98,12 +145,19 @@ public final class HyperOsActivityLaunch {
         final Context context;final WeakReference<View> view;final RectF source;final boolean card,fastCard;
         final Handler main=new Handler(Looper.getMainLooper());final AtomicBoolean finished=new AtomicBoolean();
         final Runnable timeout=()->{Log.w(TAG,"No remote transition start within1000ms");finish(true);};
+        final Runnable maxTimeout=()->finish(true);
         final List<Target> targets=new ArrayList<>();
+        final SurfaceControl.Transaction frameTx=new SurfaceControl.Transaction();
+        final Matrix tmpMatrix=new Matrix(),tmpInverse=new Matrix();
+        final RectF tmpCrop=new RectF();
+        final Rect tmpWindowCrop=new Rect();
+        final float[] tmpMatrixValues=new float[9];
         Object info,completion;SurfaceControl.Transaction initial;Target opening;ValueAnimator animator;
         Object frameApplier;boolean schedulerFailed;
         volatile HyperOsActivityMotion motion;volatile HyperOsActivityMotion.State state;
         int codeStart,codeMerge,codeTakeover,codeConsumed;
         Runner(Context context,View view,RectF source,boolean card,boolean fastCard)throws Exception {
+            ensureTxMethods();
             this.context=context;this.view=new WeakReference<>(view);this.source=source;this.card=card;this.fastCard=fastCard;
             Class<?> stub=Class.forName("android.window.IRemoteTransition$Stub");
             codeStart=integerField(stub,"TRANSACTION_startAnimation");codeMerge=integerField(stub,"TRANSACTION_mergeAnimation");
@@ -160,7 +214,7 @@ public final class HyperOsActivityLaunch {
                 View attached=view.get();if(attached==null)throw new IllegalStateException("Launch source was detached");
                 float density=attached.getResources().getDisplayMetrics().density;
                 RectF start=card?new RectF(source):HyperOsActivityMotion.capsuleStart(source,density);
-                float sourceCorner=card?Math.round(20*density):Math.round(15*density);
+                float sourceCorner=card?Math.round(26*density):Math.min(start.height()/2f,Math.round(15*density));
                 motion=new HyperOsActivityMotion(start,new RectF(selected.bounds),density,sourceCorner,windowCorner(context),card,fastCard);
                 selected.createWrapper(initial);
                 state=motion.sampleFraction(0);apply(initial,state);initial.apply();initial.close();this.initial=null;
@@ -169,15 +223,15 @@ public final class HyperOsActivityLaunch {
                 sourceFrame(attached,state);
                 animator=ValueAnimator.ofFloat(0,1);animator.setDuration(motion.duration);animator.setInterpolator(new LinearInterpolator());
                 animator.addUpdateListener(value->{
+                    if(finished.get())return;
                     try {
                         state=motion.sampleFraction(value.getAnimatedFraction());
                         if(!scheduleWithSource(state)){
-                            SurfaceControl.Transaction frame=new SurfaceControl.Transaction();
-                            try{apply(frame,state);frame.apply();}finally{frame.close();}
+                            apply(frameTx,state);
+                            frameTx.apply();
                         }
                         View sourceView=view.get();
                         if(sourceView!=null)sourceFrame(sourceView,state);
-                        if(sourceView!=null)sourceView.invalidate();
                     }catch(Throwable failure){Log.e(TAG,"App morph frame failed",failure);finish(true);}
                 });
                 animator.addListener(new AnimatorListenerAdapter(){
@@ -185,7 +239,7 @@ public final class HyperOsActivityLaunch {
                     @Override public void onAnimationCancel(Animator animation){cancelled=true;}
                     @Override public void onAnimationEnd(Animator animation){finish(cancelled);}
                 });
-                animator.start();main.postDelayed(()->finish(true),motion.duration+1500);
+                animator.start();main.postDelayed(maxTimeout,motion.duration+1500);
             }catch(Throwable error){Log.e(TAG,"App morph start failed; finishing visible tasks",error);finish(true);}
         }
         void apply(SurfaceControl.Transaction frame,HyperOsActivityMotion.State state)throws Exception {
@@ -193,50 +247,55 @@ public final class HyperOsActivityLaunch {
             HyperOsActivityMotion.SurfaceState nativeState=HyperOsActivityMotion.surface(state,target.bounds);
             // Wrapper local coordinates begin at the task's top-left, while the
             // recovered native matrix is expressed in screen-space coordinates.
-            Matrix matrix=new Matrix(nativeState.matrix);matrix.preTranslate(target.bounds.left,target.bounds.top);matrix.postTranslate(-target.rootOffset.x,-target.rootOffset.y);
-            RectF crop=new RectF(state.bounds);crop.offset(-target.rootOffset.x,-target.rootOffset.y);
-            Matrix inverse=new Matrix();matrix.invert(inverse);inverse.mapRect(crop);
-            Rect windowCrop=new Rect(Math.round(crop.left),Math.round(crop.top),Math.round(crop.right),Math.round(crop.bottom));
-            setMatrix(frame,target.wrapper,matrix);frame.setCrop(target.wrapper,windowCrop);frame.setAlpha(target.wrapper,state.alpha);frame.setVisibility(target.wrapper,true);
-            // One UI exposes its compositor's corner radius, but not ColorOS
-            // smooth weight or blurType5/mirror material. That limit is explicit.
-            invoke(frame,"setCornerRadius",new Class<?>[]{SurfaceControl.class,float.class},target.wrapper,nativeState.corner);
+            tmpMatrix.set(nativeState.matrix);tmpMatrix.preTranslate(target.bounds.left,target.bounds.top);tmpMatrix.postTranslate(-target.rootOffset.x,-target.rootOffset.y);
+            tmpCrop.set(state.bounds);tmpCrop.offset(-target.rootOffset.x,-target.rootOffset.y);
+            tmpMatrix.invert(tmpInverse);tmpInverse.mapRect(tmpCrop);
+            tmpWindowCrop.set(Math.round(tmpCrop.left),Math.round(tmpCrop.top),Math.round(tmpCrop.right),Math.round(tmpCrop.bottom));
+            setMatrixFast(frame,target.wrapper,tmpMatrix,tmpMatrixValues);frame.setCrop(target.wrapper,tmpWindowCrop);frame.setAlpha(target.wrapper,state.alpha);frame.setVisibility(target.wrapper,true);
+            setCornerRadiusFast(frame,target.wrapper,nativeState.corner);
             for(Target behind:targets)if(behind!=target && behind.mode==2 && behind.task!=null && behind.independent && behind.leash.isValid())frame.setAlpha(behind.leash,state.behindAlpha);
         }
         boolean scheduleWithSource(HyperOsActivityMotion.State state) {
-            View source=view.get();if(source==null || !source.isAttachedToWindow() || schedulerFailed)return false;
+            if(!rtAvailable || schedulerFailed)return false;
+            View source=view.get();
+            Target target=opening;
+            if(source==null || !source.isAttachedToWindow() || target==null || target.wrapper==null || !target.wrapper.isValid())return false;
             try {
-                if(invoke(source,"getViewRootImpl",new Class<?>[0])==null)return false;
-                Class<?> applierClass=Class.forName("android.view.SyncRtSurfaceTransactionApplier");
-                Class<?> paramsClass=Class.forName("android.view.SyncRtSurfaceTransactionApplier$SurfaceParams");
-                Class<?> builderClass=Class.forName("android.view.SyncRtSurfaceTransactionApplier$SurfaceParams$Builder");
-                if(frameApplier==null)frameApplier=applierClass.getConstructor(View.class).newInstance(source);
-                Target target=opening;HyperOsActivityMotion.SurfaceState nativeState=HyperOsActivityMotion.surface(state,target.bounds);
-                Matrix matrix=new Matrix(nativeState.matrix);matrix.preTranslate(target.bounds.left,target.bounds.top);matrix.postTranslate(-target.rootOffset.x,-target.rootOffset.y);
-                RectF crop=new RectF(state.bounds);crop.offset(-target.rootOffset.x,-target.rootOffset.y);Matrix inverse=new Matrix();matrix.invert(inverse);inverse.mapRect(crop);
-                Rect windowCrop=new Rect(Math.round(crop.left),Math.round(crop.top),Math.round(crop.right),Math.round(crop.bottom));
-                List<Object> parameters=new ArrayList<>();
-                // Params retain separate native handles. Finish may remove and
-                // release our wrapper while an RT callback is queued; releasing
-                // the original Java object must not invalidate queued handles.
-                Object builder=builderClass.getConstructor(SurfaceControl.class).newInstance(copySurface(target.wrapper));
-                invoke(builder,"withMatrix",new Class<?>[]{Matrix.class},matrix);invoke(builder,"withWindowCrop",new Class<?>[]{Rect.class},windowCrop);
-                invoke(builder,"withAlpha",new Class<?>[]{float.class},state.alpha);invoke(builder,"withCornerRadius",new Class<?>[]{float.class},nativeState.corner);
-                invoke(builder,"withVisibility",new Class<?>[]{boolean.class},true);parameters.add(invoke(builder,"build",new Class<?>[0]));
+                if(rtGetViewRoot.invoke(source)==null)return false;
+                if(frameApplier==null)frameApplier=rtApplierCtor.newInstance(source);
+                HyperOsActivityMotion.SurfaceState nativeState=HyperOsActivityMotion.surface(state,target.bounds);
+                tmpMatrix.set(nativeState.matrix);tmpMatrix.preTranslate(target.bounds.left,target.bounds.top);tmpMatrix.postTranslate(-target.rootOffset.x,-target.rootOffset.y);
+                tmpCrop.set(state.bounds);tmpCrop.offset(-target.rootOffset.x,-target.rootOffset.y);
+                tmpMatrix.invert(tmpInverse);tmpInverse.mapRect(tmpCrop);
+                Rect windowCrop=new Rect(Math.round(tmpCrop.left),Math.round(tmpCrop.top),Math.round(tmpCrop.right),Math.round(tmpCrop.bottom));
+                Matrix matrixCopy=new Matrix(tmpMatrix);
+                List<Object> params=new ArrayList<>(2);
+                Object builder=rtBuilderCtor.newInstance(copySurface(target.wrapper));
+                rtWithMatrix.invoke(builder,matrixCopy);
+                rtWithWindowCrop.invoke(builder,windowCrop);
+                rtWithAlpha.invoke(builder,state.alpha);
+                rtWithCornerRadius.invoke(builder,nativeState.corner);
+                rtWithVisibility.invoke(builder,Boolean.TRUE);
+                params.add(rtBuild.invoke(builder));
                 for(Target behind:targets)if(behind!=target && behind.mode==2 && behind.task!=null && behind.independent && behind.leash.isValid()){
-                    Object back=builderClass.getConstructor(SurfaceControl.class).newInstance(copySurface(behind.leash));invoke(back,"withAlpha",new Class<?>[]{float.class},state.behindAlpha);parameters.add(invoke(back,"build",new Class<?>[0]));
+                    Object back=rtBuilderCtor.newInstance(copySurface(behind.leash));
+                    rtWithAlpha.invoke(back,state.behindAlpha);
+                    params.add(rtBuild.invoke(back));
                 }
-                Object array=Array.newInstance(paramsClass,parameters.size());for(int i=0;i<parameters.size();i++)Array.set(array,i,parameters.get(i));
-                invoke(frameApplier,"scheduleApply",new Class<?>[]{array.getClass()},array);
-                // No Transaction is passed/closed by this client: the applier
-                // creates, queues and owns its transaction on the ViewRoot frame.
+                Object array=Array.newInstance(rtParamsClass,params.size());
+                for(int i=0;i<params.size();i++)Array.set(array,i,params.get(i));
+                rtScheduleApply.invoke(frameApplier,array);
                 return true;
-            }catch(Throwable error){schedulerFailed=true;Log.w(TAG,"Source RT scheduling unavailable; applying task frames directly",error);return false;}
+            } catch(Throwable error) {
+                schedulerFailed=true;
+                Log.w(TAG,"Source RT scheduling unavailable; applying task frames directly",error);
+                return false;
+            }
         }
         void finish(boolean cancelled) {
             if(Looper.myLooper()!=Looper.getMainLooper()){main.post(()->finish(cancelled));return;}
             if(!finished.compareAndSet(false,true))return;
-            main.removeCallbacks(timeout);
+            main.removeCallbacks(timeout);main.removeCallbacks(maxTimeout);
             if(animator!=null && animator.isRunning())animator.cancel();
             SurfaceControl.Transaction cleanup=new SurfaceControl.Transaction();
             try {
@@ -245,11 +304,9 @@ public final class HyperOsActivityLaunch {
             }catch(Throwable error){Log.e(TAG,"Task leash cleanup failed",error);}
             finally {
                 try{cleanup.apply();}catch(Throwable error){Log.e(TAG,"Cleanup transaction apply failed",error);}
-                // The restore transaction is already applied. A local Shell
-                // callback may process its argument asynchronously; never hand
-                // it a Java Transaction that we are about to close.
                 try{finishCallback(completion,null);}catch(Throwable error){Log.e(TAG,"Transition finish callback failed",error);}
                 cleanup.close();
+                try{frameTx.close();}catch(Throwable ignored){}
                 if(info!=null)try{invoke(info,"releaseAllSurfaces",new Class<?>[0]);}catch(Throwable ignored){}
                 for(Target target:targets)if(target.wrapper!=null)target.wrapper.release();
                 View source=view.get();if(source!=null && LAUNCHES.get(source)==this){LAUNCHES.remove(source);try{sourceFinish(source,cancelled);}catch(Throwable error){Log.e(TAG,"Source cleanup failed",error);}}
@@ -314,7 +371,15 @@ public final class HyperOsActivityLaunch {
         Class<?> contract=Class.forName("android.window.IRemoteTransitionFinishedCallback"),wct=Class.forName("android.window.WindowContainerTransaction");
         contract.getMethod("onTransitionFinished",wct,SurfaceControl.Transaction.class).invoke(callback,null,transaction);
     }
-    private static void setMatrix(SurfaceControl.Transaction t,SurfaceControl leash,Matrix matrix)throws Exception {invoke(t,"setMatrix",new Class<?>[]{SurfaceControl.class,Matrix.class,float[].class},leash,matrix,new float[9]);}
+    private static void setMatrixFast(SurfaceControl.Transaction t,SurfaceControl leash,Matrix matrix,float[] values)throws Exception {
+        if(mSetMatrix!=null)mSetMatrix.invoke(t,leash,matrix,values);
+        else invoke(t,"setMatrix",new Class<?>[]{SurfaceControl.class,Matrix.class,float[].class},leash,matrix,values);
+    }
+    private static void setCornerRadiusFast(SurfaceControl.Transaction t,SurfaceControl leash,float radius)throws Exception {
+        if(mSetCornerRadius!=null)mSetCornerRadius.invoke(t,leash,radius);
+        else invoke(t,"setCornerRadius",new Class<?>[]{SurfaceControl.class,float.class},leash,radius);
+    }
+    private static void setMatrix(SurfaceControl.Transaction t,SurfaceControl leash,Matrix matrix)throws Exception {setMatrixFast(t,leash,matrix,new float[9]);}
     private static SurfaceControl copySurface(SurfaceControl surface){Parcel parcel=Parcel.obtain();try{parcel.writeTypedObject(surface,0);parcel.setDataPosition(0);return parcel.readTypedObject(SurfaceControl.CREATOR);}finally{parcel.recycle();}}
     private static void sourcePrepare(View view,RectF local,boolean card)throws Exception {
         SourceCallbacks handler=callbacks;if(handler!=null){handler.onPrepare(view,local,card);return;}

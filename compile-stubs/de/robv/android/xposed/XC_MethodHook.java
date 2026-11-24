@@ -6,6 +6,7 @@ public abstract class XC_MethodHook {
         public Object thisObject;
         public Object[] args;
         public Object getResult() { throw new UnsupportedOperationException("Compile-only API"); }
+        public void setResult(Object result) { throw new UnsupportedOperationException("Compile-only API"); }
         public boolean hasThrowable() { throw new UnsupportedOperationException("Compile-only API"); }
     }
     public final class Unhook {

@@ -180,6 +180,7 @@ public final class RootViewIntegrationProbe {
         if(args.length>3&&args[3].equals("swipe")){SwipeIntegrationProbe.start();return;}
         if(args.length>3&&args[3].equals("queue")){QueueIntegrationProbe.start();return;}
         if(args.length>3&&args[3].equals("torch")){TorchIntegrationProbe.start();return;}
+        if(args.length>3&&args[3].equals("effects")){EffectsIntegrationProbe.start();return;}
         MAIN.postDelayed(RootViewIntegrationProbe::next, 100);
     }
     static IslandItem.Action capability(String label,int glyph,boolean destructive){

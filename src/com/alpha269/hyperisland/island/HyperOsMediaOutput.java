@@ -205,13 +205,30 @@ public final class HyperOsMediaOutput implements AutoCloseable {
             return new Output(describe(active,local),null,local,true);
         }
         @Override public Runnable chooser(MediaController controller,String packageName){
-            if(closed||controller==null||packageName==null||packageName.isEmpty()||!packageName.equals(controller.getPackageName())||availableManager()==null)return null;
+            if(closed||controller==null||packageName==null||packageName.isEmpty()||!packageName.equals(controller.getPackageName()))return null;
             MediaSession.Token token=controller.getSessionToken();if(token==null)return null;
+            if(availableManager()!=null){
+                return ()->{
+                    if(closed)return;Object manager=availableManager();Method method;synchronized(registryLock){method=showMethod;}
+                    if(manager==null||method==null)return;
+                    try{method.invoke(manager,packageName,false,null,true,Process.myUserHandle(),token,null);}
+                    catch(Exception failure){Log.w(TAG,"Native route chooser failed",failure);}
+                };
+            }
+            // One UI 8+ (Android 16) opens native Media Output via com.android.systemui.action.OPEN_MEDIA_OUTPUT.
             return ()->{
-                if(closed)return;Object manager=availableManager();Method method;synchronized(registryLock){method=showMethod;}
-                if(manager==null||method==null)return;
-                try{method.invoke(manager,packageName,false,null,true,Process.myUserHandle(),token,null);}
-                catch(Exception failure){Log.w(TAG,"Native route chooser failed",failure);}
+                if(closed)return;
+                try{
+                    android.content.Intent intent=new android.content.Intent("com.android.systemui.action.OPEN_MEDIA_OUTPUT")
+                        .setPackage("com.android.systemui")
+                        .setFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK|android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                        .putExtra("android.intent.extra.PACKAGE_NAME",packageName);
+                    android.app.ActivityOptions opts=android.app.ActivityOptions.makeBasic();
+                    opts.setPendingIntentBackgroundActivityStartMode(1);
+                    context.startActivity(intent,opts.toBundle());
+                    HyperIslandController ctrl=HyperIslandController.get();
+                    if(ctrl!=null)ctrl.collapseIfExpanded();
+                }catch(Exception failure){Log.w(TAG,"One UI media output intent failed",failure);}
             };
         }
         @Override public void close(){

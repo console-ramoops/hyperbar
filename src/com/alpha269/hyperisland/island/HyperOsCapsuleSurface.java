@@ -81,16 +81,28 @@ final class HyperOsCapsuleSurface extends FrameLayout {
         icon.setTranslationX((float)values[19]);icon.setTranslationY((float)values[20]);
         blur(icon,values[21]);
         content.setPresentationVisible(values[9]>.001,values[17]>.001);
-        content.setOwnerVisible(alpha>.001f);invalidate();
+        if(ownsViews())content.setOwnerVisible(alpha>.001f);
+        invalidate();
     }
-    boolean needsFrames(){return activeMask!=0||content.needsFrames();}
+    boolean ownsViews(){return content.view.getParent()==big||content.smallView().getParent()==icon;}
+    boolean needsFrames(){return activeMask!=0||(ownsViews()&&content.needsFrames());}
     private void blur(View view,double ratio){
-        int radius=Math.max(0,Math.min(160,(int)(40*(float)ratio)));
-        if(radius>0&&blurs[radius]==null)blurs[radius]=RenderEffect.createBlurEffect(radius,radius,Shader.TileMode.CLAMP);
-        view.setRenderEffect(radius==0?null:blurs[radius]);
+        // Per-frame HWUI RenderEffect blur disabled for low-lag rendering.
     }
-    long takeAnimator(){long result=animator;animator=0;detach(content.view);detach(content.smallView());detach(this);return result;}
-    void close(){if(animator!=0){HyperOsNative.nativeDestroyAnimator(animator);animator=0;}content.setOwnerVisible(false);detach(content.view);detach(content.smallView());detach(this);}
+    long takeAnimator(){
+        long result=animator;animator=0;
+        if(content.view.getParent()==big)detach(content.view);
+        if(content.smallView().getParent()==icon)detach(content.smallView());
+        detach(this);return result;
+    }
+    void close(){
+        if(animator!=0){HyperOsNative.nativeDestroyAnimator(animator);animator=0;}
+        boolean ownedBig=content.view.getParent()==big,ownedSmall=content.smallView().getParent()==icon;
+        if(ownedBig||ownedSmall)content.setOwnerVisible(false);
+        if(ownedBig)detach(content.view);
+        if(ownedSmall)detach(content.smallView());
+        detach(this);
+    }
     private float radius(){return Math.max(0,Math.min(((float)values[7]-(float)values[6])/2,30*(float)metrics[18]));}
     @Override protected void onDraw(Canvas canvas){if(values[5]>values[4]&&values[7]>values[6])canvas.drawRoundRect((float)values[4],(float)values[6],(float)values[5],(float)values[7],radius(),radius(),background);}
 }

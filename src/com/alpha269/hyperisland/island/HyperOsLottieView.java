@@ -29,6 +29,7 @@ public final class HyperOsLottieView extends ImageView implements HyperOsCardFac
     private ImageView resourceRelay;
     private Object gradientCallback;
     private boolean autoplay,released,ownerVisible=true,resumeWhenVisible;
+    private boolean chargingFast;
     private long nowDuringStep=-1,lastInvalidated=-1,lastStep=-1;
     private int invalidateDelay=30,renderMode=2;
     private int topColor=0xffffffff,bottomColor=0xffffffff;
@@ -59,7 +60,7 @@ public final class HyperOsLottieView extends ImageView implements HyperOsCardFac
         super(context,attributes);
         if(attributes!=null){
             int cadence=attributes.getAttributeIntValue(APP_ATTRIBUTES,"frameRate",-1);
-            invalidateDelay=cadence==1?14:cadence==2?6:30;
+            invalidateDelay=cadence==2?6:14;
             renderMode=attributes.getAttributeIntValue(APP_ATTRIBUTES,"lottie_renderMode",2);
         }
         // ImageView's default is FIT_CENTER; its constructor also preserves any
@@ -67,7 +68,7 @@ public final class HyperOsLottieView extends ImageView implements HyperOsCardFac
     }
 
     @Override public void setAnimation(HyperOsResources resources,String source,boolean autoplay,boolean loop,int number){
-        release();released=false;
+        release();released=false;chargingFast=false;
         try{
             EngineApi current=api;if(current==null)throw new IllegalStateException("Original Lottie runtime is not configured");
             String raw=rawName(source);if(raw==null)throw new IllegalArgumentException("Missing animation source");
@@ -99,6 +100,19 @@ public final class HyperOsLottieView extends ImageView implements HyperOsCardFac
 
     /** Compact source branch counts total plays, unlike Card/V3's repeat count. */
     public void setCompactNumber(int number){if(clock!=null)clock.setRepeatCount(number>0?number-1:-1);}
+    /** Original ChargerView starts NORMAL at frame zero and plays the same asset in both directions. */
+    public void setChargerType(boolean fast){
+        if(engine==null||clock==null||chargingFast==fast)return;
+        chargingFast=fast;
+        try{
+            if(clock.isRunning()){clock.cancel();api.setProgress.invoke(engine,1f);}
+            api.setSpeed.invoke(engine,fast?1f:-1f);
+            clock.setRepeatCount(0);autoplay=true;api.play.invoke(engine);
+            Choreographer.getInstance().removeFrameCallback(callback);
+            if(!ownerVisible){api.unschedule.invoke(clock,true);resumeWhenVisible=true;}
+            lastStep=-1;lastInvalidated=-1;invalidate();
+        }catch(Exception failure){throw new IllegalStateException("Original charger morph failed",failure);}
+    }
 
     /** Pause without losing the original frame, repeat count or completion state. */
     @Override public void setOwnerVisible(boolean visible){
@@ -196,7 +210,7 @@ public final class HyperOsLottieView extends ImageView implements HyperOsCardFac
     }
 
     private static final class EngineApi {
-        final Method parse,setComposition,setFrame,selectMode,addCallback,gradientColors,unschedule;
+        final Method parse,setComposition,setFrame,selectMode,addCallback,gradientColors,unschedule,play,setSpeed,setProgress;
         final Constructor<?> drawable,gradientConstructor;
         final Field animator,running,lastFrameNanos,frame,startFrame,renderMode,imageFolder;
         final Object[] renderModes;final Object gradientKey,gradientProperty;
@@ -205,6 +219,7 @@ public final class HyperOsLottieView extends ImageView implements HyperOsCardFac
             Class<?> factory=loader.loadClass("d.p"),drawableClass=loader.loadClass("d.A"),composition=loader.loadClass("d.k"),timer=loader.loadClass("p.c");
             parse=factory.getDeclaredMethod("c",InputStream.class,String.class);drawable=drawableClass.getConstructor();
             setComposition=drawableClass.getDeclaredMethod("H",composition);setFrame=drawableClass.getDeclaredMethod("I",int.class);selectMode=drawableClass.getDeclaredMethod("j");
+            play=drawableClass.getDeclaredMethod("x");setSpeed=drawableClass.getDeclaredMethod("V",float.class);setProgress=drawableClass.getDeclaredMethod("S",float.class);
             animator=accessible(drawableClass,"animator");renderMode=accessible(drawableClass,"r");imageFolder=accessible(drawableClass,"h");
             running=accessible(timer,"k");lastFrameNanos=accessible(timer,"e");frame=accessible(timer,"f");startFrame=accessible(composition,"k");unschedule=timer.getDeclaredMethod("g",boolean.class);
             Class<?> modes=loader.loadClass("d.K");renderModes=new Object[]{modes.getField("a").get(null),modes.getField("b").get(null),modes.getField("c").get(null)};

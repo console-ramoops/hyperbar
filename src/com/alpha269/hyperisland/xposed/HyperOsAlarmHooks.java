@@ -20,7 +20,8 @@ public final class HyperOsAlarmHooks {
     public static final String APP="com.sec.android.app.clockpackage";
     private static final String PREFIX=APP+".alarm.";
     private static final List<XC_MethodHook.Unhook> hooks=new ArrayList<>();
-    private static boolean ready;
+    private static volatile boolean ready;
+    private static HyperOsAlarmCapabilities capabilities;
     private HyperOsAlarmHooks(){}
 
     public static synchronized void install(ClassLoader loader)throws Exception{
@@ -39,6 +40,10 @@ public final class HyperOsAlarmHooks {
             ||query.getReturnType()!=alarm||extras.getReturnType()!=Bundle.class)
             throw new IllegalStateException("Unsupported Samsung Clock notification ABI");
         try{
+            HyperOsAlarmCapabilities bridge=new HyperOsAlarmCapabilities(loader,alarm,builder,ids,query);
+            bridge.install();capabilities=bridge;
+        }catch(Exception unsupported){report(unsupported);}
+        try{
             hooks.add(XposedBridge.hookMethod(ring,new XC_MethodHook(){
                 @Override protected void afterHookedMethod(MethodHookParam parameter){
                     if(!ready||parameter.hasThrowable()||!(parameter.getResult() instanceof Notification))return;
@@ -49,23 +54,32 @@ public final class HyperOsAlarmHooks {
                         if(!Notification.CATEGORY_ALARM.equals(notification.category))return;
                         if(notification.extras==null)notification.extras=new Bundle();
                         write(notification.extras,1,snapshot);
+                        if(capabilities!=null)capabilities.ringing(context,parameter.args[1],HyperOsAlarmData.from(1,snapshot),notification.extras);
                     }catch(Throwable error){report(error);}
                 }
             }));
             hooks.add(XposedBridge.hookMethod(snooze,new XC_MethodHook(){
+                @Override protected void beforeHookedMethod(MethodHookParam parameter){
+                    if(ready&&capabilities!=null)capabilities.enter(parameter.args[2],(Intent)parameter.args[1]);
+                }
                 @Override protected void afterHookedMethod(MethodHookParam parameter){
+                    HyperOsAlarmCapabilities.Capture capture=capabilities==null?null:capabilities.leave();
                     if(!ready||parameter.hasThrowable())return;
                     try{
                         Context context=(Context)parameter.args[0];if(!trusted(context))return;
                         Map<Integer,Long> snapshot=snoozedSnapshot(context,parameter.thisObject,ids,query);
                         if(snapshot==null)return;
                         Object value=extras.invoke(parameter.args[2]);
-                        if(value instanceof Bundle)write((Bundle)value,2,snapshot);
+                        if(value instanceof Bundle){
+                            Bundle bundle=(Bundle)value;write(bundle,2,snapshot);
+                            if(capabilities!=null)capabilities.snoozed(context,HyperOsAlarmData.from(2,snapshot),capture,bundle);
+                        }
                     }catch(Throwable error){report(error);}
                 }
             }));
             ready=true;
         }catch(Throwable error){
+            if(capabilities!=null){capabilities.close();capabilities=null;}
             for(XC_MethodHook.Unhook hook:hooks)hook.unhook();hooks.clear();
             if(error instanceof Exception)throw (Exception)error;
             throw new IllegalStateException("Could not bind Samsung Clock timestamp hooks",error);
@@ -88,7 +102,7 @@ public final class HyperOsAlarmHooks {
         if(id<=0||time<100_000_000_000L)return null;
         Map<Integer,Long> snapshot=new TreeMap<>();snapshot.put(id,time);return snapshot;
     }
-    private static Map<Integer,Long> snoozedSnapshot(Context context,Object companion,Method ids,Method query)throws Exception{
+    static Map<Integer,Long> snoozedSnapshot(Context context,Object companion,Method ids,Method query)throws Exception{
         Object value=ids.invoke(companion);if(!(value instanceof int[]))return null;
         int[] current=((int[])value).clone();if(current.length==0||current.length>64)return null;
         Map<Integer,Long> snapshot=new TreeMap<>();
@@ -99,6 +113,13 @@ public final class HyperOsAlarmHooks {
             long time=((Number)field(alarm,"mAlarmAlertTime")).longValue();if(time<100_000_000_000L)return null;
             snapshot.put(id,time);
         }
+        // Re-read the rows too: an unchanged id set can still have a new alert time.
+        for(Map.Entry<Integer,Long> entry:snapshot.entrySet()){
+            Object alarm=query.invoke(null,context,entry.getKey());if(alarm==null)return null;
+            if(((Number)field(alarm,"mActivate")).intValue()!=2
+                ||((Number)field(alarm,"mId")).intValue()!=entry.getKey()
+                ||((Number)field(alarm,"mAlarmAlertTime")).longValue()!=entry.getValue())return null;
+        }
         int[] latest=(int[])ids.invoke(companion);
         if(latest==null||latest.length!=snapshot.size())return null;
         java.util.Set<Integer> verified=new java.util.HashSet<>();
@@ -106,6 +127,8 @@ public final class HyperOsAlarmHooks {
         return snapshot;
     }
     private static void write(Bundle extras,int style,Map<Integer,Long> snapshot){
+        for(String key:new String[]{HyperOsAlarmData.EXTRA_CONTROLS,HyperOsAlarmData.EXTRA_DISMISS,HyperOsAlarmData.EXTRA_DISMISS_TITLE,
+            HyperOsAlarmData.EXTRA_SNOOZE,HyperOsAlarmData.EXTRA_SNOOZE_TITLE})extras.remove(key);
         int[] ids=new int[snapshot.size()];long[] times=new long[snapshot.size()];int index=0;long minimum=Long.MAX_VALUE;
         for(Map.Entry<Integer,Long> entry:snapshot.entrySet()){
             ids[index]=entry.getKey();times[index++]=entry.getValue();minimum=Math.min(minimum,entry.getValue());

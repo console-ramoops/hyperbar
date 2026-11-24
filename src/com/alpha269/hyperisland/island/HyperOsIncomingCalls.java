@@ -95,6 +95,10 @@ public final class HyperOsIncomingCalls {
     }
 
     public static boolean isIncoming(IslandItem item) {
+        return item != null && (item.incomingCall || item.key.startsWith(KEY_PREFIX));
+    }
+
+    public static boolean isBridgeItem(IslandItem item) {
         return item != null && item.key.startsWith(KEY_PREFIX);
     }
 
@@ -170,7 +174,7 @@ public final class HyperOsIncomingCalls {
         PendingIntent answer = parcel(intent, "answer");
         PendingIntent decline = parcel(intent, "decline");
         PendingIntent presentation = parcel(intent, "presentation");
-        if (answer == null || decline == null || presentation == null) {
+        if (answer == null || decline == null) {
             clear();
             return;
         }
@@ -180,6 +184,7 @@ public final class HyperOsIncomingCalls {
         // A new native button binding invalidates the old card's frame/interaction readiness.
         IslandItem item = new IslandItem(KEY_PREFIX + token + ":" + generation);
         item.kind = IslandItem.Kind.CALL;
+        item.incomingCall = true;
         item.packageName = APP;
         item.appName = bounded(intent.getStringExtra("appName"), "Phone");
         item.title = title;
@@ -217,6 +222,7 @@ public final class HyperOsIncomingCalls {
     private static IslandItem copyItem(IslandItem source, PendingIntent decline, PendingIntent answer) {
         IslandItem item = new IslandItem(source.key);
         item.kind = source.kind;
+        item.incomingCall = true;
         item.packageName = source.packageName;
         item.appName = source.appName;
         item.title = source.title;
@@ -257,6 +263,7 @@ public final class HyperOsIncomingCalls {
     }
 
     private static void advertise(Snapshot snapshot, boolean shown) {
+        if (snapshot == null || snapshot.presentation == null) return;
         long now = SystemClock.uptimeMillis();
         if (shown == advertisedVisible && now - lastAdvertisement < HEARTBEAT_MS) return;
         try {

@@ -46,6 +46,7 @@ public final class IslandItem {
     public boolean iconRight;
     public Runnable iconTap;
     public int iconTint;
+    public boolean incomingCall;
     public boolean isMedia;
     public final String key;
     public Drawable leftImage;
