@@ -4,6 +4,7 @@ import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -11,12 +12,16 @@ import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
+import android.graphics.fonts.Font;
+import android.graphics.fonts.FontFamily;
+import android.graphics.fonts.FontStyle;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsetsController;
 import android.view.animation.DecelerateInterpolator;
@@ -25,19 +30,15 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import com.alpha269.hyperisland.island.HyperOsAssets;
-import com.alpha269.hyperisland.island.HyperOsFonts;
 import java.io.File;
 
-/**
- * Miuix / HyperOS-styled native settings screen.
- * Follows compose-miuix-ui/miuix color, rounded super-surface card, switch, and lightweight typography tokens.
- */
+/** Clean HyperOS / Miuix-styled settings screen for HyperBar. */
 public final class SettingsActivity extends Activity {
     private boolean dark;
     private float density;
     private Typeface titleFace;
-    private Typeface bodyFace;
     private Typeface mediumFace;
+    private Typeface bodyFace;
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -46,12 +47,14 @@ public final class SettingsActivity extends Activity {
         resolveFaces();
         configureWindow();
 
-        int bgColor = dark ? 0xff000000 : 0xfff7f7f7;
-        int cardColor = dark ? 0xff1c1c1e : 0xffffffff;
-        int textPrimary = dark ? 0xfff2f2f7 : 0xff111113;
-        int textSecondary = dark ? 0xff8e8e93 : 0xff6e6e73;
-        int dividerColor = dark ? 0x1affffff : 0x12000000;
-        int accent = dark ? 0xff277af7 : 0xff3482ff;
+        int bgColor = dark ? 0xff000000 : 0xfff4f5f7;
+        int cardColor = dark ? 0xff16171a : 0xffffffff;
+        int cardStroke = dark ? 0x16ffffff : 0x0c000000;
+        int textPrimary = dark ? 0xfff5f6f8 : 0xff111214;
+        int textSecondary = dark ? 0xff8e929b : 0xff6b707a;
+        int dividerColor = dark ? 0x14ffffff : 0x0f000000;
+        int accent = dark ? 0xff2f80ff : 0xff2b76f6;
+        int rippleColor = dark ? 0x1cffffff : 0x12000000;
 
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(bgColor);
@@ -61,21 +64,22 @@ public final class SettingsActivity extends Activity {
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         int side = dp(16);
-        page.setPadding(side, dp(24), side, dp(36));
+        page.setPadding(side, dp(18), side, dp(32));
         page.setFitsSystemWindows(true);
 
-        // Large Miuix / HyperOS top header
+        // Header
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
-        header.setPadding(dp(8), dp(22), dp(8), dp(18));
+        header.setPadding(dp(6), dp(10), dp(6), dp(20));
 
         LinearLayout titleRow = new LinearLayout(this);
         titleRow.setOrientation(LinearLayout.HORIZONTAL);
         titleRow.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("HyperBar");
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 32);
+        title.setText(getString(R.string.app_name));
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 30);
+        title.setLetterSpacing(-0.02f);
         title.setTextColor(textPrimary);
         title.setTypeface(titleFace);
         titleRow.addView(title);
@@ -88,7 +92,7 @@ public final class SettingsActivity extends Activity {
         badge.setPadding(dp(8), dp(3), dp(8), dp(3));
         GradientDrawable badgeBg = new GradientDrawable();
         badgeBg.setCornerRadius(dp(10));
-        badgeBg.setColor((accent & 0x00ffffff) | 0x20000000);
+        badgeBg.setColor((accent & 0x00ffffff) | 0x22000000);
         badge.setBackground(badgeBg);
         LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(-2, -2);
         badgeLp.setMarginStart(dp(10));
@@ -96,74 +100,102 @@ public final class SettingsActivity extends Activity {
         header.addView(titleRow);
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("HyperOS Dynamic Island for One UI");
+        subtitle.setText(getString(R.string.module_description));
         subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         subtitle.setTextColor(textSecondary);
         subtitle.setTypeface(bodyFace);
-        subtitle.setPadding(0, dp(4), 0, 0);
+        subtitle.setLineSpacing(dp(2), 1.0f);
+        subtitle.setPadding(0, dp(6), 0, 0);
         header.addView(subtitle);
         page.addView(header);
 
         SharedPreferences prefs = getSharedPreferences(SettingsProvider.PREFS, 0);
 
-        // Section 1: General
-        addSectionTitle(page, "GENERAL", textSecondary);
-        LinearLayout generalCard = createCard(cardColor);
-        addSwitchRow(generalCard, prefs, SettingsProvider.KEY_ENABLED, true,
-            "Enable HyperBar", "Replace status-bar & shade Now Bar with HyperBar",
-            textPrimary, textSecondary, accent, false, dividerColor);
-        addSwitchRow(generalCard, prefs, SettingsProvider.KEY_BLUETOOTH, true,
-            "Bluetooth device cards", "Show audio accessory connection cards in the island",
-            textPrimary, textSecondary, accent, true, dividerColor);
-        page.addView(generalCard, cardLayoutParams());
+        // Master switch hero card
+        boolean enabledNow = prefs.getBoolean(SettingsProvider.KEY_ENABLED, true);
+        LinearLayout masterCard = createCard(masterBg(enabledNow, accent, cardColor), masterStroke(enabledNow, accent, cardStroke));
+        addSwitchRow(masterCard, prefs, SettingsProvider.KEY_ENABLED, true,
+            "Enable HyperBar", "Replace Now Bar with HyperIsland",
+            textPrimary, textSecondary, accent, rippleColor, false, dividerColor,
+            checked -> updateCardBg(masterCard, masterBg(checked, accent, cardColor), masterStroke(checked, accent, cardStroke)));
+        LinearLayout.LayoutParams masterLp = new LinearLayout.LayoutParams(-1, -2);
+        masterLp.bottomMargin = dp(10);
+        page.addView(masterCard, masterLp);
 
-        // Section 2: Appearance & Effects
-        addSectionTitle(page, "APPEARANCE & EFFECTS", textSecondary);
-        LinearLayout effectsCard = createCard(cardColor);
-        addSwitchRow(effectsCard, prefs, SettingsProvider.KEY_ISLAND_BLUR, true,
-            "Island light blur", "Apply lightweight frosted blur behind the expanded island card only",
-            textPrimary, textSecondary, accent, false, dividerColor);
-        addSwitchRow(effectsCard, prefs, SettingsProvider.KEY_GLASS_EFFECT, false,
-            "Liquid glass refraction", "Enable full HyperOS glass refraction shader for flagship devices",
-            textPrimary, textSecondary, accent, false, dividerColor);
-        addSwitchRow(effectsCard, prefs, SettingsProvider.KEY_CHARGING_ANIM, true,
-            "HyperOS charging animation", "Replace One UI battery plug-in animation with HyperOS island charging & fast-charge decimals",
-            textPrimary, textSecondary, accent, true, dividerColor);
-        page.addView(effectsCard, cardLayoutParams());
+        // Features
+        addSectionTitle(page, "Features", textSecondary);
+        LinearLayout featuresCard = createCard(cardColor, cardStroke);
+        addSwitchRow(featuresCard, prefs, SettingsProvider.KEY_CHARGING_ANIM, true,
+            "Charging animation", "HyperOS charging pill & fast-charge decimals",
+            textPrimary, textSecondary, accent, rippleColor, false, dividerColor, null);
+        addSwitchRow(featuresCard, prefs, SettingsProvider.KEY_BLUETOOTH, true,
+            "Bluetooth cards", "Show connected audio accessories",
+            textPrimary, textSecondary, accent, rippleColor, true, dividerColor, null);
+        page.addView(featuresCard, cardLayoutParams());
 
-        // Section 3: Setup & Notes
-        addSectionTitle(page, "SETUP & INTEGRATION", textSecondary);
-        LinearLayout infoCard = createCard(cardColor);
-        addInfoRow(infoCard, "LSPosed scope",
-            "Enable System UI and Samsung Clock in LSPosed, then reboot. Visual switches apply live without restarting System UI.",
-            textPrimary, textSecondary, false, dividerColor);
-        addInfoRow(infoCard, "Calls & gestures",
-            "Ongoing calls appear in the island while incoming calls stay native One UI. Long-press a capsule to launch directly into its app.",
-            textPrimary, textSecondary, true, dividerColor);
-        page.addView(infoCard, cardLayoutParams());
+        // Visuals
+        addSectionTitle(page, "Visuals", textSecondary);
+        LinearLayout visualsCard = createCard(cardColor, cardStroke);
+        addSwitchRow(visualsCard, prefs, SettingsProvider.KEY_ISLAND_BLUR, true,
+            "Island blur", "Frosted blur behind expanded cards",
+            textPrimary, textSecondary, accent, rippleColor, false, dividerColor, null);
+        addSwitchRow(visualsCard, prefs, SettingsProvider.KEY_GLASS_EFFECT, false,
+            "Liquid glass", "HyperOS refraction shader for flagship GPUs",
+            textPrimary, textSecondary, accent, rippleColor, true, dividerColor, null);
+        page.addView(visualsCard, cardLayoutParams());
 
         scroll.addView(page, new FrameLayout.LayoutParams(-1, -2));
         setContentView(scroll);
     }
 
+    private int masterBg(boolean enabled, int accent, int cardColor) {
+        if (!enabled) return cardColor;
+        return dark ? blend(cardColor, accent, 0.16f) : blend(cardColor, accent, 0.08f);
+    }
+
+    private int masterStroke(boolean enabled, int accent, int defaultStroke) {
+        if (!enabled) return defaultStroke;
+        return (accent & 0x00ffffff) | (dark ? 0x48000000 : 0x34000000);
+    }
+
     private void resolveFaces() {
+        File fontFile = null;
         try {
             File fonts = HyperOsAssets.fonts(this);
-            if (fonts != null && new File(fonts, "MiSansLatinVF.ttf").isFile()) {
-                titleFace = HyperOsFonts.face(this, fonts, "mipro-regular", Typeface.NORMAL);
-                bodyFace = HyperOsFonts.face(this, fonts, "mipro-light", Typeface.NORMAL);
-                mediumFace = HyperOsFonts.face(this, fonts, "mipro-medium", Typeface.NORMAL);
+            if (fonts != null) {
+                File latin = new File(fonts, "MiSansLatinVF.ttf");
+                File vf = new File(fonts, "MiSansVF.ttf");
+                if (latin.isFile()) fontFile = latin;
+                else if (vf.isFile()) fontFile = vf;
             }
         } catch (Throwable ignored) {}
-        if (titleFace == null) titleFace = Typeface.create(Typeface.SANS_SERIF, 400, false);
-        if (bodyFace == null) bodyFace = Typeface.create(Typeface.SANS_SERIF, 350, false);
-        if (mediumFace == null) mediumFace = Typeface.create(Typeface.SANS_SERIF, 500, false);
+        titleFace = buildWeightFace(fontFile, 600);
+        mediumFace = buildWeightFace(fontFile, 500);
+        bodyFace = buildWeightFace(fontFile, 400);
+    }
+
+    private static Typeface buildWeightFace(File fontFile, int weight) {
+        if (fontFile != null && fontFile.isFile()) {
+            try {
+                Font font = new Font.Builder(fontFile)
+                    .setFontVariationSettings("'wght' " + weight)
+                    .setWeight(weight)
+                    .setSlant(FontStyle.FONT_SLANT_UPRIGHT)
+                    .build();
+                Typeface face = new Typeface.CustomFallbackBuilder(new FontFamily.Builder(font).build())
+                    .setStyle(new FontStyle(weight, FontStyle.FONT_SLANT_UPRIGHT))
+                    .setSystemFallback("sans-serif")
+                    .build();
+                if (face != null) return face;
+            } catch (Throwable ignored) {}
+        }
+        return Typeface.create(Typeface.SANS_SERIF, weight, false);
     }
 
     private void configureWindow() {
         Window window = getWindow();
         if (window == null) return;
-        int bgColor = dark ? 0xff000000 : 0xfff7f7f7;
+        int bgColor = dark ? 0xff000000 : 0xfff4f5f7;
         window.setStatusBarColor(bgColor);
         window.setNavigationBarColor(bgColor);
         if (Build.VERSION.SDK_INT >= 30) {
@@ -179,39 +211,45 @@ public final class SettingsActivity extends Activity {
     private void addSectionTitle(LinearLayout page, String text, int color) {
         TextView label = new TextView(this);
         label.setText(text);
-        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        label.setLetterSpacing(0.06f);
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         label.setTextColor(color);
         label.setTypeface(mediumFace);
-        label.setPadding(dp(12), dp(14), dp(12), dp(8));
+        label.setPadding(dp(10), dp(12), dp(10), dp(8));
         page.addView(label);
     }
 
-    private LinearLayout createCard(int color) {
+    private LinearLayout createCard(int color, int strokeColor) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(dp(20));
-        bg.setColor(color);
-        card.setBackground(bg);
+        updateCardBg(card, color, strokeColor);
         card.setClipToOutline(true);
         return card;
     }
 
+    private void updateCardBg(LinearLayout card, int color, int strokeColor) {
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(20));
+        bg.setColor(color);
+        bg.setStroke(Math.max(1, Math.round(density * 0.75f)), strokeColor);
+        card.setBackground(bg);
+    }
+
     private LinearLayout.LayoutParams cardLayoutParams() {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-        lp.bottomMargin = dp(6);
+        lp.bottomMargin = dp(8);
         return lp;
     }
 
     private void addSwitchRow(LinearLayout card, SharedPreferences prefs, String key, boolean defValue,
                               String titleText, String summaryText, int primaryColor, int secondaryColor,
-                              int accent, boolean addTopDivider, int dividerColor) {
+                              int accent, int rippleColor, boolean addTopDivider, int dividerColor,
+                              OnCheckedListener extraListener) {
         if (addTopDivider) addDivider(card, dividerColor);
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(18), dp(16), dp(18), dp(16));
+        row.setBackground(new RippleDrawable(ColorStateList.valueOf(rippleColor), null, null));
 
         LinearLayout textCol = new LinearLayout(this);
         textCol.setOrientation(LinearLayout.VERTICAL);
@@ -237,36 +275,13 @@ public final class SettingsActivity extends Activity {
         MiuixSwitch toggle = new MiuixSwitch(this, accent, dark);
         toggle.setChecked(prefs.getBoolean(key, defValue), false);
         toggle.setOnCheckedChangeListener(checked -> {
+            row.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
             prefs.edit().putBoolean(key, checked).apply();
             getContentResolver().notifyChange(SettingsProvider.URI, null);
+            if (extraListener != null) extraListener.onCheckedChanged(checked);
         });
         row.addView(toggle, new LinearLayout.LayoutParams(dp(50), dp(28)));
         row.setOnClickListener(v -> toggle.toggle());
-        card.addView(row, new LinearLayout.LayoutParams(-1, -2));
-    }
-
-    private void addInfoRow(LinearLayout card, String titleText, String bodyText,
-                            int primaryColor, int secondaryColor, boolean addTopDivider, int dividerColor) {
-        if (addTopDivider) addDivider(card, dividerColor);
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(dp(18), dp(15), dp(18), dp(15));
-
-        TextView title = new TextView(this);
-        title.setText(titleText);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        title.setTextColor(primaryColor);
-        title.setTypeface(mediumFace);
-        row.addView(title);
-
-        TextView body = new TextView(this);
-        body.setText(bodyText);
-        body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        body.setTextColor(secondaryColor);
-        body.setTypeface(bodyFace);
-        body.setLineSpacing(dp(2), 1.0f);
-        body.setPadding(0, dp(4), 0, 0);
-        row.addView(body);
         card.addView(row, new LinearLayout.LayoutParams(-1, -2));
     }
 
@@ -277,6 +292,13 @@ public final class SettingsActivity extends Activity {
         lp.setMarginStart(dp(18));
         lp.setMarginEnd(dp(18));
         card.addView(line, lp);
+    }
+
+    private static int blend(int base, int overlay, float ratio) {
+        int r = Math.round(Color.red(base) + (Color.red(overlay) - Color.red(base)) * ratio);
+        int g = Math.round(Color.green(base) + (Color.green(overlay) - Color.green(base)) * ratio);
+        int b = Math.round(Color.blue(base) + (Color.blue(overlay) - Color.blue(base)) * ratio);
+        return Color.rgb(r, g, b);
     }
 
     private int dp(float v) {
@@ -302,7 +324,7 @@ public final class SettingsActivity extends Activity {
         MiuixSwitch(Context context, int accent, boolean dark) {
             super(context);
             this.onColor = accent;
-            this.offColor = dark ? 0xff3a3a3c : 0xffe2e2e6;
+            this.offColor = dark ? 0xff363840 : 0xffd9dce3;
             this.density = context.getResources().getDisplayMetrics().density;
             setClickable(true);
             setOnClickListener(v -> toggle());
@@ -332,7 +354,7 @@ public final class SettingsActivity extends Activity {
                 return;
             }
             animator = ValueAnimator.ofFloat(progress, target);
-            animator.setDuration(200L);
+            animator.setDuration(190L);
             animator.setInterpolator(new DecelerateInterpolator(1.8f));
             animator.addUpdateListener(a -> {
                 progress = (Float) a.getAnimatedValue();
