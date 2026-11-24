@@ -44,7 +44,7 @@ DYNAMIC_PATTERNS = {
     ],
     'systemui-res.apk': [
         r'^miui_media_session_island', r'^ic_media_(prev|next|play_button|pause_button|seamless)',
-        r'^media_', r'^album_art', r'^seamless_',
+        r'^media_', r'^album_art', r'^seamless_', r'^music_panel_bg',
     ],
 }
 

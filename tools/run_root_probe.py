@@ -9,7 +9,9 @@ if not apk.is_file():apk=root/'build/source-app/HyperBar-source-unsigned.test-pa
 if not apk.is_file():raise SystemExit('Build an internal package first; see README.md')
 (p/'inputs').mkdir(parents=True,exist_ok=True)
 probeapk=p/'inputs/current-source.test-package';shutil.copyfile(apk,probeapk)
-app=p/'inputs/current-source.jar';shutil.copyfile(root/'build/source-app/app.jar',app)
+app_src=Path(os.environ.get('HYPERBAR_APP_JAR',root/'build/source-app/app.jar'))
+if not app_src.is_file():app_src=root/'build/source-check/app.jar'
+app=p/'inputs/current-source.jar';shutil.copyfile(app_src,app)
 classes=p/'classes';shutil.rmtree(classes,ignore_errors=True);classes.mkdir()
 subprocess.run(['javac','--release','8','-cp',f'{sdk}:{app}','-d',str(classes),*[str(source) for source in p.glob('*.java')]],check=True)
 subprocess.run(['jar','cf',str(p/'probe-classes.jar'),'-C',str(classes),'.'],check=True)

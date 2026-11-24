@@ -149,7 +149,10 @@ public final class HyperIslandController implements IslandHost, AutoCloseable {
         @Override public void onReceive(Context ignored,Intent intent){
             String action=intent.getAction();
             if(Intent.ACTION_SCREEN_OFF.equals(action))screenOff=true;
-            else if(Intent.ACTION_SCREEN_ON.equals(action)||Intent.ACTION_USER_PRESENT.equals(action))screenOff=false;
+            else if(Intent.ACTION_SCREEN_ON.equals(action)||Intent.ACTION_USER_PRESENT.equals(action)){
+                screenOff=false;
+                if(Intent.ACTION_USER_PRESENT.equals(action))readSettings();
+            }
             requestRefresh();
         }
     };
@@ -301,12 +304,16 @@ public final class HyperIslandController implements IslandHost, AutoCloseable {
     private void readSettings(){try{Bundle values=context.getContentResolver().call(SETTINGS,"values",null,null);if(values!=null)onSettings(values);}
         catch(RuntimeException failure){Log.w(TAG,"Settings read unavailable",failure);}}
     public void onSettings(Bundle values){if(values==null)return;final Bundle copy=new Bundle(values);onMain(()->{
+        boolean prevEnabled=enabled;
         enabled=copy.getBoolean("enabled",true);incomingEnabled=false;bluetoothEnabled=copy.getBoolean("bluetooth",true);
         blurEnabled=copy.getBoolean("island_blur",true);glassEnabled=copy.getBoolean("glass_effect",false);
         chargingAnimEnabled=copy.getBoolean("charging_anim",true);
         if(window!=null)window.setVisualOptions(blurEnabled,glassEnabled);
-        if(!enabled||!incomingEnabled)HyperOsIncomingCalls.reportHidden();requestRefresh();
+        if(!enabled||!incomingEnabled)HyperOsIncomingCalls.reportHidden();
+        if(prevEnabled!=enabled)com.alpha269.hyperisland.xposed.HyperOsShadeIntegration.onEnabledChanged();
+        requestRefresh();
     });}
+    public boolean isEnabled(){return enabled;}
     public boolean isChargingAnimEnabled(){return isReplacementActive()&&chargingAnimEnabled&&charging!=null;}
     public void onBatteryPlugged(int level,int superFastType){onMain(()->{
         if(!closed&&charging!=null&&chargingAnimEnabled)charging.onPluggedEvent(level,superFastType);
@@ -725,6 +732,9 @@ public final class HyperIslandController implements IslandHost, AutoCloseable {
     @Override public void onIslandFrame(){if(window!=null)window.onFrame();if(presentation==null&&!presentationFailed&&HyperOsNative.isLoaded())requestRefresh();}
     @Override public boolean hasMinimized(){return presentation!=null?!presentation.layout().hidden.isEmpty():!minimized.isEmpty();}
     @Override public void onSwipe(int direction){onMain(()->{
+        if(charging!=null&&chargingAnimEnabled&&charging.isActive(SystemClock.uptimeMillis())&&(window==null||!window.isExpanded())){
+            charging.dismiss();hint=direction<0?1:2;refreshNow();return;
+        }
         if(presentation==null)return;
         try{
             if(presentation.size()>=2)presentation.cycle(direction);
@@ -733,6 +743,9 @@ public final class HyperIslandController implements IslandHost, AutoCloseable {
         }catch(Throwable failure){failPresentation(failure);}
     });}
     @Override public HyperOsPresentationQueue.Layout previewSwipe(int direction){
+        if(charging!=null&&chargingAnimEnabled&&charging.isActive(SystemClock.uptimeMillis())&&(window==null||!window.isExpanded())){
+            return presentation!=null?presentation.layout():new HyperOsPresentationQueue.Layout(Collections.emptyList(),Collections.emptyList(),true);
+        }
         if(presentation==null)return null;
         return presentation.size()>=2?presentation.previewCycle(direction):presentation.preview(direction);
     }

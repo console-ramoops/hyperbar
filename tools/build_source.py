@@ -45,7 +45,10 @@ dex=BUILD/'dex';fresh(dex)
 run('java','-cp',JADX,'com.android.tools.r8.D8','--min-api','35','--lib',API,
     '--lib',BUILD/'xposed-api.jar','--output',dex,BUILD/'app.jar',*libraries)
 
+written=set()
 def write(output,name,data,stored=False):
+    if name in written:return
+    written.add(name)
     info=zipfile.ZipInfo(name,(2026,11,22,12,0,0));info.compress_type=zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED
     if stored:
         alignment=16384 if name.endswith('.so') else 4

@@ -115,6 +115,15 @@ public final class HyperOsShadeIntegration {
         XposedBridge.log(TAG + ": installed");
     }
 
+    private static boolean isModuleEnabled() {
+        HyperIslandController c = HyperIslandController.get();
+        return c == null || c.isEnabled();
+    }
+
+    public static void onEnabledChanged() {
+        MAIN.post(HyperOsShadeIntegration::invalidateShadeList);
+    }
+
     // -------------------------------------------------------------------------
     // 1. ShadePerf + ShadeLayoutCallbacks (ColorOS parity)
     // -------------------------------------------------------------------------
@@ -123,6 +132,7 @@ public final class HyperOsShadeIntegration {
             Method setFps = View.class.getDeclaredMethod("setRequestedFrameRate", float.class);
             XposedBridge.hookMethod(setFps, new XC_MethodHook() {
                 @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    if (!isModuleEnabled()) return;
                     try {
                         float next = ((Float) param.args[0]).floatValue();
                         if (Float.compare(next, ((View) param.thisObject).getRequestedFrameRate()) == 0) {
@@ -137,6 +147,7 @@ public final class HyperOsShadeIntegration {
             Class<?> wmg = Class.forName("android.view.WindowManagerGlobal", false, null);
             XposedBridge.hookAllMethods(wmg, "trimMemory", new XC_MethodHook() {
                 @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    if (!isModuleEnabled()) return;
                     if (param.args.length > 0 && param.args[0] instanceof Integer && ((Integer) param.args[0]).intValue() == 20) {
                         param.setResult(null);
                     }
@@ -145,10 +156,10 @@ public final class HyperOsShadeIntegration {
         } catch (Throwable ignored) {}
         // Drop Samsung QS debug stack traces on every shade animation frame
         hook(loader, "com.android.systemui.qs.animator.QSAnimView", "nowWithDebugCallers", new XC_MethodHook() {
-            @Override protected void beforeHookedMethod(MethodHookParam param) { param.setResult(""); }
+            @Override protected void beforeHookedMethod(MethodHookParam param) { if (isModuleEnabled()) param.setResult(""); }
         });
         hook(loader, "com.android.systemui.log.QuickPanelLoggerHelper$PanelStateLogger", "log", new XC_MethodHook() {
-            @Override protected void beforeHookedMethod(MethodHookParam param) { param.setResult(null); }
+            @Override protected void beforeHookedMethod(MethodHookParam param) { if (isModuleEnabled()) param.setResult(null); }
         });
         try {
             XposedBridge.hookAllMethods(View.class, "semSetBlurInfo", new XC_MethodHook() {
@@ -356,6 +367,7 @@ public final class HyperOsShadeIntegration {
     }
 
     private static boolean shouldHideEntry(Object entry) {
+        if (!isModuleEnabled()) return false;
         return shouldHideNotification(sbnOf(entry), SystemClock.uptimeMillis());
     }
 

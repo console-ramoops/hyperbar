@@ -8,6 +8,7 @@ import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
@@ -23,11 +24,14 @@ import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import com.alpha269.hyperisland.island.HyperOsAssets;
 import java.io.File;
@@ -45,7 +49,6 @@ public final class SettingsActivity extends Activity {
         dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
         density = getResources().getDisplayMetrics().density;
         resolveFaces();
-        configureWindow();
 
         int bgColor = dark ? 0xff000000 : 0xfff4f5f7;
         int cardColor = dark ? 0xff16171a : 0xffffffff;
@@ -59,13 +62,18 @@ public final class SettingsActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(bgColor);
         scroll.setVerticalScrollBarEnabled(false);
+        scroll.setClipToPadding(false);
         scroll.setOverScrollMode(View.OVER_SCROLL_ALWAYS);
 
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
-        int side = dp(16);
-        page.setPadding(side, dp(18), side, dp(32));
-        page.setFitsSystemWindows(true);
+        final int side = dp(16), topPad = dp(18), bottomPad = dp(32);
+        page.setPadding(side, topPad, side, bottomPad);
+        scroll.setOnApplyWindowInsetsListener((v, insets) -> {
+            Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            page.setPadding(side + bars.left, topPad + bars.top, side + bars.right, bottomPad + bars.bottom);
+            return insets;
+        });
 
         // Header
         LinearLayout header = new LinearLayout(this);
@@ -146,6 +154,7 @@ public final class SettingsActivity extends Activity {
 
         scroll.addView(page, new FrameLayout.LayoutParams(-1, -2));
         setContentView(scroll);
+        configureWindow();
     }
 
     private int masterBg(boolean enabled, int accent, int cardColor) {
@@ -199,8 +208,11 @@ public final class SettingsActivity extends Activity {
         window.setStatusBarColor(bgColor);
         window.setNavigationBarColor(bgColor);
         if (Build.VERSION.SDK_INT >= 30) {
-            View decor = window.getDecorView();
-            WindowInsetsController ctrl = decor == null ? null : decor.getWindowInsetsController();
+            WindowInsetsController ctrl = window.getInsetsController();
+            if (ctrl == null) {
+                View decor = window.getDecorView();
+                ctrl = decor == null ? null : decor.getWindowInsetsController();
+            }
             if (ctrl != null) {
                 int mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
                 ctrl.setSystemBarsAppearance(dark ? 0 : mask, mask);
@@ -282,6 +294,14 @@ public final class SettingsActivity extends Activity {
         });
         row.addView(toggle, new LinearLayout.LayoutParams(dp(50), dp(28)));
         row.setOnClickListener(v -> toggle.toggle());
+        row.setAccessibilityDelegate(new View.AccessibilityDelegate() {
+            @Override public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
+                super.onInitializeAccessibilityNodeInfo(host, info);
+                info.setClassName(Switch.class.getName());
+                info.setCheckable(true);
+                info.setChecked(toggle.isChecked());
+            }
+        });
         card.addView(row, new LinearLayout.LayoutParams(-1, -2));
     }
 
@@ -326,8 +346,13 @@ public final class SettingsActivity extends Activity {
             this.onColor = accent;
             this.offColor = dark ? 0xff363840 : 0xffd9dce3;
             this.density = context.getResources().getDisplayMetrics().density;
-            setClickable(true);
-            setOnClickListener(v -> toggle());
+            setClickable(false);
+            setFocusable(false);
+            setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        }
+
+        boolean isChecked() {
+            return checked;
         }
 
         void setOnCheckedChangeListener(OnCheckedListener l) {

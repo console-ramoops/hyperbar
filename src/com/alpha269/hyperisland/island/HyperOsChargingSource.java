@@ -36,6 +36,7 @@ public final class HyperOsChargingSource implements AutoCloseable {
     private boolean started, closed, receiverRegistered;
     private boolean plugged, fast, superFast, shownForPlug;
     private boolean decimalsReliable;
+    private boolean batteryCurrentInUa;
     private int level = -1;
     private int superFastFromEvent;
     private int hundredths;
@@ -116,16 +117,18 @@ public final class HyperOsChargingSource implements AutoCloseable {
         }
     }
 
-    /** Triggered directly from One UI's BatteryEvent hook on plug-in for zero-delay replacement. */
-    public void onPluggedEvent(int reportedLevel, int superFastType) {
+    /**
+     * Triggered directly from One UI's BatteryEvent hook on plug-in for zero-delay replacement.
+     * speedTier: 0 = normal, 1 = fast (AFC 15W / Fast Wireless / SFC 25W), >= 2 = turbo (SFC 2.0 45W+).
+     */
+    public void onPluggedEvent(int reportedLevel, int speedTier) {
         if (closed) return;
         main.removeCallbacks(clearPlugSession);
         int prevLevel = level;
         if (reportedLevel >= 0 && reportedLevel <= 100) level = reportedLevel;
-        if (superFastType > 0) superFastFromEvent = Math.max(superFastFromEvent, superFastType);
-        // Samsung mSuperFastCharger: 1 = Adaptive Fast (15W), 2 = Fast Wireless, 3 = SFC 25W, 4 = SFC 2.0 45W.
-        boolean eventFast = superFastType >= 1;
-        boolean eventSuper = superFastType >= 3;
+        if (speedTier > 0) superFastFromEvent = Math.max(superFastFromEvent, speedTier);
+        boolean eventFast = speedTier >= 1;
+        boolean eventSuper = speedTier >= 2;
         plugged = true;
         if (eventFast) fast = true;
         if (eventSuper) superFast = true;
@@ -141,7 +144,14 @@ public final class HyperOsChargingSource implements AutoCloseable {
         }
     }
 
-    void onBatteryIntent(Intent intent, boolean initial) {
+    public void dismiss() {
+        if (closed || expiresAtUptime <= 0L) return;
+        expiresAtUptime = 0L;
+        main.removeCallbacks(ticker);
+        notifyChanged();
+    }
+
+    public void onBatteryIntent(Intent intent, boolean initial) {
         if (closed || intent == null) return;
         int rawLevel = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
         int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
@@ -166,24 +176,25 @@ public final class HyperOsChargingSource implements AutoCloseable {
         }
 
         main.removeCallbacks(clearPlugSession);
-        boolean hvc = intent.getBooleanExtra("hv_charger", false) || intent.getBooleanExtra("hvc", false);
+        boolean slow = extraFlag(intent, "slow_charger");
+        boolean hvc = extraFlag(intent, "hv_charger") || extraFlag(intent, "hvc");
         int chargerType = intent.getIntExtra("charger_type", 0);
-        int fastExtra = intent.getIntExtra("fast_charger", 0);
-        int voltageMv = intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0);
+        int online = intent.getIntExtra("online", 0);
+        int fastExtra = extraInt(intent, "fast_charger");
         int maxCurrentUa = intent.getIntExtra("max_charging_current", 0);
         int maxVoltageUv = intent.getIntExtra("max_charging_voltage", 0);
 
         float watts = 0f;
-        if (maxCurrentUa > 0 && maxVoltageUv > 0) {
-            watts = (maxCurrentUa / 1_000_000f) * (maxVoltageUv / 1_000_000f);
+        if (maxCurrentUa > 0) {
+            float volts = maxVoltageUv > 0 ? (maxVoltageUv / 1_000_000f) : 5.0f;
+            watts = (maxCurrentUa / 1_000_000f) * volts;
         }
-        int liveCurrentUa = readChargingCurrentUa();
-        if (voltageMv > 0 && liveCurrentUa > 0) {
-            float liveW = (liveCurrentUa / 1_000_000f) * (voltageMv / 1000f);
-            watts = Math.max(watts, liveW);
-        }
-        boolean nextFast = hvc || chargerType >= 1 || fastExtra >= 1 || superFastFromEvent >= 1 || watts >= 11.5f;
-        boolean nextSuper = superFastFromEvent >= 3 || chargerType >= 3 || watts >= 20.0f;
+        // On Samsung One UI, charger_type 1/2 is standard non-fast TA/USB; only 3/4/5/520 (or wireless online==100 / hv_charger) is fast.
+        boolean samsungFast = chargerType == 3 || chargerType == 4 || chargerType == 5 || chargerType == 520
+            || (plugType == BatteryManager.BATTERY_PLUGGED_WIRELESS && online == 100);
+        boolean samsungSuper = chargerType == 4 || chargerType == 5;
+        boolean nextFast = !slow && (hvc || samsungFast || fastExtra >= 1 || superFastFromEvent >= 1 || watts >= 11.5f);
+        boolean nextSuper = !slow && (samsungSuper || superFastFromEvent >= 2 || watts >= 33.0f);
 
         int prevLevel = level;
         plugged = true;
@@ -356,11 +367,33 @@ public final class HyperOsChargingSource implements AutoCloseable {
         return Math.max(0, Math.min(99, (int) Math.floor(frac * 100.0)));
     }
 
+    private static boolean extraFlag(Intent intent, String key) {
+        android.os.Bundle extras = intent == null ? null : intent.getExtras();
+        if (extras == null || !extras.containsKey(key)) return false;
+        Object raw = extras.get(key);
+        if (raw instanceof Boolean) return (Boolean) raw;
+        if (raw instanceof Number) return ((Number) raw).intValue() > 0;
+        return false;
+    }
+
+    private static int extraInt(Intent intent, String key) {
+        android.os.Bundle extras = intent == null ? null : intent.getExtras();
+        if (extras == null || !extras.containsKey(key)) return 0;
+        Object raw = extras.get(key);
+        if (raw instanceof Number) return ((Number) raw).intValue();
+        if (raw instanceof Boolean) return ((Boolean) raw) ? 1 : 0;
+        return 0;
+    }
+
     private static double readFullCapacityUah(Context context) {
-        long sysFull = normalizeCapacityUah(readSysfsLong("/sys/class/power_supply/battery/charge_full"));
-        if (sysFull > 0L) return sysFull;
-        long sysDesign = normalizeCapacityUah(readSysfsLong("/sys/class/power_supply/battery/charge_full_design"));
-        if (sysDesign > 0L) return sysDesign;
+        for (String node : new String[]{
+            "/sys/class/power_supply/battery/charge_full",
+            "/sys/class/power_supply/bms/charge_full",
+            "/sys/class/power_supply/battery/charge_full_design"
+        }) {
+            long sysCap = normalizeCapacityUah(readSysfsLong(node));
+            if (sysCap > 0L) return sysCap;
+        }
         if (context != null) {
             try {
                 Class<?> pp = Class.forName("com.android.internal.os.PowerProfile");
@@ -378,11 +411,20 @@ public final class HyperOsChargingSource implements AutoCloseable {
         return -1L;
     }
 
-    private static int normalizeCurrentUa(int raw) {
-        if (raw == Integer.MIN_VALUE || raw == 0) return 0;
-        int abs = Math.abs(raw);
-        if (abs > 25_000_000) return 0; // Sanity guard against bogus/uninitialized HAL values
-        return abs < 20_000 ? abs * 1000 : abs;
+    /** Normalizes current to µA without turning low µA trickle readings (e.g. 12,000 µA = 12 mA) into Amps. */
+    private int normalizeCurrentReadingUa(long raw, boolean explicitUa) {
+        if (raw == Integer.MIN_VALUE || raw == Long.MIN_VALUE || raw == 0L) return 0;
+        long abs = Math.abs(raw);
+        if (abs > 25_000_000L) return 0; // Sanity guard against uninitialized HAL values
+        if (explicitUa) return (int) abs;
+        if (abs >= 15_000L) {
+            batteryCurrentInUa = true;
+            return (int) abs;
+        }
+        if (!batteryCurrentInUa && abs <= 8_000L) {
+            return (int) (abs * 1000L);
+        }
+        return (int) abs;
     }
 
     private static long readSysfsLong(String path) {
@@ -406,29 +448,37 @@ public final class HyperOsChargingSource implements AutoCloseable {
         return raw;
     }
 
-    /** Prefers smoothed average current over noisy instantaneous spikes. */
+    /** Prefers explicit µA sysfs nodes or smoothed BatteryManager average current. */
     private int readChargingCurrentUa() {
+        for (String uaNode : new String[]{
+            "/sys/class/power_supply/battery/batt_current_ua_avg",
+            "/sys/class/power_supply/battery/batt_current_ua_now"
+        }) {
+            long sysUa = readSysfsLong(uaNode);
+            if (sysUa != -1L && sysUa != 0L) {
+                int norm = normalizeCurrentReadingUa(sysUa, true);
+                if (norm > 0) return norm;
+            }
+        }
         if (batteryManager != null) {
             try {
                 int avg = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE);
-                int normAvg = normalizeCurrentUa(avg);
+                int normAvg = normalizeCurrentReadingUa(avg, false);
                 if (normAvg > 0) return normAvg;
             } catch (Throwable ignored) {}
             try {
                 int now = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
-                int normNow = normalizeCurrentUa(now);
+                int normNow = normalizeCurrentReadingUa(now, false);
                 if (normNow > 0) return normNow;
             } catch (Throwable ignored) {}
         }
         for (String node : new String[]{
-            "/sys/class/power_supply/battery/batt_current_ua_avg",
             "/sys/class/power_supply/battery/current_avg",
-            "/sys/class/power_supply/battery/batt_current_ua_now",
             "/sys/class/power_supply/battery/current_now"
         }) {
             long sys = readSysfsLong(node);
             if (sys != -1L && sys != 0L) {
-                int norm = normalizeCurrentUa((int) sys);
+                int norm = normalizeCurrentReadingUa(sys, false);
                 if (norm > 0) return norm;
             }
         }

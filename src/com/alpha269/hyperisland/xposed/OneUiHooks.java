@@ -81,39 +81,53 @@ public final class OneUiHooks {
                     if(!"com.android.systemui.statusbar.events.BatteryEvent".equals(event.getClass().getName()))return;
                     HyperIslandController controller=HyperIslandController.get();
                     if(controller==null||!controller.isChargingAnimEnabled())return;
-                    int[] parsed=readBatteryEvent(event);
-                    int level=parsed[0],chargingType=parsed[1];
-                    Object pui=secPowerUi.get();
-                    if(pui!=null){
-                        if(level<0)level=readIntField(pui,-1,"mBatteryLevel");
-                        int sfc=readIntField(pui,0,"mSuperFastCharger");
-                        if(sfc>chargingType)chargingType=sfc;
-                        if(chargingType<1&&Boolean.TRUE.equals(read(pui,"mBatteryHighVoltageCharger")))chargingType=1;
-                    }
-                    controller.onBatteryPlugged(level,chargingType);
-                    param.setResult(null);
+                    int[] parsed=readBatteryEvent(event,secPowerUi.get());
+                    controller.onBatteryPlugged(parsed[0],parsed[1]);
+                    if(param.method instanceof Method&&((Method)param.method).getReturnType()==boolean.class)param.setResult(Boolean.FALSE);
+                    else param.setResult(null);
                 }catch(Throwable failure){XposedBridge.log("HyperIsland BatteryEvent replace: "+failure.getClass().getSimpleName());}
             }
         });
     }
-    private static int[] readBatteryEvent(Object event){
+    /**
+     * Maps Samsung SecPowerUI / ChargerAnimationUtils constants to normalized speed tiers:
+     * 0 = normal (charger_type 0/1/2 without HV, normal wireless 6, slow 8),
+     * 1 = fast (AFC 15W hv_charger / type 2, Fast Wireless type 7 / 520, SFC 25W sfc 3),
+     * 2 = turbo (SFC 2.0 45W+ sfc 4 / 5).
+     */
+    public static int resolveSamsungChargingTier(int superFastCharger,int batteryChargingType,boolean hvCharger,boolean slowCharger){
+        if(slowCharger||batteryChargingType==8)return 0;
+        if(superFastCharger==4||superFastCharger==5||batteryChargingType==4||batteryChargingType==5)return 2;
+        if(superFastCharger==3||superFastCharger==520||batteryChargingType==2||batteryChargingType==3
+            ||batteryChargingType==7||batteryChargingType==520||hvCharger)return 1;
+        return 0;
+    }
+    private static int[] readBatteryEvent(Object event,Object pui){
         int level=readIntField(event,-1,"batteryLevel","mBatteryLevel","level");
-        int type=readIntField(event,-1,"chargingType","mChargingType","superFastCharger","fastChargingType");
-        if(level<0||type<0){
-            int intIndex=0;
-            for(Field f:event.getClass().getDeclaredFields()){
-                if(f.getType()!=int.class||java.lang.reflect.Modifier.isStatic(f.getModifiers()))continue;
-                try{
-                    f.setAccessible(true);
-                    int v=f.getInt(event);
-                    String n=f.getName().toLowerCase(java.util.Locale.ROOT);
-                    if(level<0&&(n.contains("level")||intIndex==0)&&v>=0&&v<=100)level=v;
-                    else if(type<0&&(n.contains("charg")||n.contains("fast")||n.contains("type")||intIndex==1))type=v;
-                    intIndex++;
-                }catch(Throwable ignored){}
+        int sfc=readIntField(event,-1,"chargingType","mChargingType","superFastCharger","fastChargingType");
+        Object creator=read(event,"viewCreator");
+        if(sfc<0&&creator!=null){
+            sfc=readIntField(creator,-1,"f$1","chargingType","superFastCharger");
+            if(sfc<0){
+                for(Field f:creator.getClass().getDeclaredFields()){
+                    if(f.getType()!=int.class||java.lang.reflect.Modifier.isStatic(f.getModifiers()))continue;
+                    try{f.setAccessible(true);sfc=f.getInt(creator);break;}catch(Throwable ignored){}
+                }
             }
         }
-        return new int[]{level,Math.max(0,type)};
+        if(level<0){
+            for(Field f:event.getClass().getDeclaredFields()){
+                if(f.getType()!=int.class||java.lang.reflect.Modifier.isStatic(f.getModifiers()))continue;
+                try{f.setAccessible(true);int v=f.getInt(event);if(v>=0&&v<=100){level=v;break;}}catch(Throwable ignored){}
+            }
+        }
+        if(level<0)level=readIntField(pui,-1,"mBatteryLevel");
+        int puiSfc=readIntField(pui,0,"mSuperFastCharger");
+        if(puiSfc>sfc)sfc=puiSfc;
+        int bct=readIntField(pui,0,"mBatteryChargingType");
+        boolean hvc=Boolean.TRUE.equals(read(pui,"mBatteryHighVoltageCharger"));
+        boolean slow=Boolean.TRUE.equals(read(pui,"mBatterySlowCharger"));
+        return new int[]{level,resolveSamsungChargingTier(Math.max(0,sfc),bct,hvc,slow)};
     }
     private static int readIntField(Object owner,int fallback,String... names){
         if(owner==null)return fallback;

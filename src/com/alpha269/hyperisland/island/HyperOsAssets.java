@@ -44,19 +44,49 @@ public final class HyperOsAssets {
         final Handler main = new Handler(Looper.getMainLooper());
         IO.execute(() -> {
             try {
-                asset(context,"plugin-res.apk");
-                asset(context,"call-res.apk");
-                asset(context,"systemui-res.apk");
-                asset(context,"lottie-runtime.dex");
-                asset(context,"fonts/MiSansVF.ttf");
-                asset(context,"fonts/MiSansLatinVF.ttf");
-                asset(context,"fonts/MiSansCondensed2T.ttf");
-                fonts(context);
+                java.util.Set<String> keepFiles = new java.util.HashSet<>();
+                for (String name : new String[]{
+                    "plugin-res.apk", "call-res.apk", "systemui-res.apk", "lottie-runtime.dex",
+                    "fonts/MiSansVF.ttf", "fonts/MiSansLatinVF.ttf", "fonts/MiSansCondensed2T.ttf"
+                }) {
+                    keepFiles.add(asset(context, name).getName());
+                }
+                for (String opt : new String[]{"glass_material.sksl", "glass_normal.sksl", "smooth_corner_mips.bin"}) {
+                    try { keepFiles.add(asset(context, opt).getName()); } catch (Throwable ignored) {}
+                }
+                File fontDir = fonts(context);
+                pruneStaleCache(context.getCodeCacheDir(), keepFiles, fontDir == null ? null : fontDir.getName());
                 main.post(completion::ready);
             } catch(Throwable failure) {
                 main.post(() -> completion.failed(failure));
             }
         });
+    }
+
+    private static void pruneStaleCache(File cacheRoot, java.util.Set<String> keepAssets, String keepFontDir) {
+        if (cacheRoot == null || !cacheRoot.isDirectory()) return;
+        try {
+            File assetsDir = new File(cacheRoot, "hyperos-assets");
+            File[] assetEntries = assetsDir.listFiles();
+            if (assetEntries != null) {
+                for (File f : assetEntries) {
+                    String n = f.getName();
+                    if ("lottie-opt".equals(n) || n.endsWith(".tmp") || keepAssets.contains(n)) continue;
+                    if (f.isFile()) f.delete();
+                }
+            }
+            File[] rootEntries = cacheRoot.listFiles();
+            if (rootEntries != null && keepFontDir != null) {
+                for (File f : rootEntries) {
+                    String n = f.getName();
+                    if (f.isDirectory() && n.startsWith("hyperos-fonts-") && !n.equals(keepFontDir)) {
+                        File[] children = f.listFiles();
+                        if (children != null) for (File c : children) c.delete();
+                        f.delete();
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
     public static HyperOsResources plugin(Context context) {
