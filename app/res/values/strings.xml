@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HyperBar</string>
+    <string name="module_description">Bring Xiaomi\'s HyperIsland to One UI by replacing the native Now Bar</string>
+</resources>
